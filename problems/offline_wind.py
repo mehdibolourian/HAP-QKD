@@ -10,65 +10,78 @@ def offline_wind(gss, haps, links, demands):
 
     for idx_l, l in enumerate(links):
         for idx_d, d in enumerate(demands):
-            for t in sys.T:
-                r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
-                r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
-                z[idx_l, idx_d, t]   = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}",   vtype=GRB.BINARY,     lb=0.0)
-
+            for t in syst.T:
+                r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+                r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+                z[idx_l, idx_d, t]   = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}",   vtype=GRB.BINARY)
                 
     for idx_d, d in enumerate(demands):
-        for t in sys.T:
-            r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+        for t in syst.T:
+            r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
             
     for idx_l, l in enumerate(links):
-        for t in sys.T:
+        for t in syst.T:
             a[idx_l, t] = m.addVar(name=f"a_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
 
     m.ModelSense = GRB.MAXIMIZE
     
-    # Primary objective: maximize x
+    # Primary objective: maximize r_h
     m.setObjectiveN(sum(sum(r_h[idx_d, t]
                            for idx_d, d in enumerate(demands)
                           )
-                       for t in sys.T
-                      ) * sys.THETA, index=0, priority=2, weight=1.0, name="Primary")
+                       for t in syst.T
+                      ) * syst.THETA, index=0, priority=2, weight=1.0, abstol=1e-9, reltol=1e-9, name="Primary")
 
-    # Secondary objective: maximize y
-    m.setObjectiveN(sum(sum(a[idx_l, t]
-                           for idx_l, l in enumerate(links)
-                          )
-                       for t in sys.T
-                      ), index=1, priority=1, weight=1.0, name="Secondary")
+    # m.setObjectiveN(sum(sum(sum(r_1[idx_l, idx_d, t]
+    #                             for idx_l, l in enumerate(links)
+    #                            )
+    #                         for idx_d, d in enumerate(demands)
+    #                        )
+    #                     for t in syst.T
+    #                    ) * syst.THETA, index=1, priority=1, weight=1.0, abstol=1e-9, reltol=1e-9, name="Secondary")
+
+    # # Secondary objective: maximize a
+    # m.setObjectiveN(sum(sum(a[idx_l, t]
+    #                        for idx_l, l in enumerate(links)
+    #                       )
+    #                    for t in syst.T
+    #                   ), index=1, priority=1, weight=1.0, abstol=1e-6, reltol=1e-6, name="Secondary")
+
+    m.setParam("MIPGap", 1e-9)          # force very tight gap
+    m.setParam("MIPGapAbs", 1e-9)
+    m.setParam("FeasibilityTol", 1e-9)
+    m.setParam("IntFeasTol", 1e-9)
+    m.setParam("OptimalityTol", 1e-9)
 
     ## Constraints
     # Demand-level and link-level key rate coordination (Note that r_h is a part of the maximization objective)
     # r_h = min_{l:z_l=1}(r_1+r_2)
     m.addConstrs(
         (
-            r_h[idx_d, t] <= r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t] + d.K_REQ[t] * (1 - z[idx_l, idx_d, t])
+            r_h[idx_d, t] <= r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t] + d.K_REQ[t] * KEY_RATE_SCALE * (1 - z[idx_l, idx_d, t])
             for idx_l, l in enumerate(links)
             for idx_d, d in enumerate(demands)
-            for t        in sys.T
+            for t        in syst.T
         ), name="demand_link_coordination"
     )
 
-    EPSILON = 1e-3
+    EPSILON = 1e-8
     # Key rate and routing coordination (1)
     m.addConstrs(
         (
             r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t] >= EPSILON * z[idx_l, idx_d, t]
             for idx_l, l in enumerate(links)
             for idx_d, d in enumerate(demands)
-            for t        in sys.T
+            for t        in syst.T
         ), name="demand_link_coordination_1"
     )
     # Key rate and routing coordination (2)
     m.addConstrs(
         (
-            r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t] <= d.K_REQ[t] * z[idx_l, idx_d, t]
+            r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t] <= d.K_REQ[t] * KEY_RATE_SCALE * z[idx_l, idx_d, t]
             for idx_l, l in enumerate(links)
             for idx_d, d in enumerate(demands)
-            for t        in sys.T
+            for t        in syst.T
         ), name="key_rate_routing_coordination_2"
     )
     
@@ -77,9 +90,9 @@ def offline_wind(gss, haps, links, demands):
         (
             sum(r_1[idx_l, idx_d, t]
                 for idx_d, d in enumerate(demands)
-               ) <= l.K_MAX[t]
+               ) <= l.K_MAX[t] * KEY_RATE_SCALE
             for idx_l, l in enumerate(links)
-            for t        in sys.T
+            for t        in syst.T
         ), name="max_key_rate"
     )
     
@@ -96,7 +109,7 @@ def offline_wind(gss, haps, links, demands):
                        if gss.index(l.n2) == gss.index(d.n1)
                       ) == 1
             for idx_d, d in enumerate(demands)
-            for t        in sys.T
+            for t        in syst.T
         ), name="flow_conservation_1"
     )
     m.addConstrs(
@@ -111,7 +124,7 @@ def offline_wind(gss, haps, links, demands):
                        if gss.index(l.n1) == gss.index(d.n2)
                       ) == 1
             for idx_d, d in enumerate(demands)
-            for t        in sys.T
+            for t        in syst.T
         ), name="flow_conservation_2"
     )
     m.addConstrs(
@@ -126,8 +139,18 @@ def offline_wind(gss, haps, links, demands):
             for idx_d, d in enumerate(demands)
             for n in gss + haps
             if  n != d.n1 and n != d.n2
-            for t        in sys.T
+            for t in syst.T
         ), name="flow_conservation_3"
+    )
+    m.addConstrs(
+        (
+            z[idx_l_1, idx_d, t] + z[idx_l_2, idx_d, t] <= 1
+            for idx_l_1, l_1 in enumerate(links)
+            for idx_l_2, l_2 in enumerate(links)
+            if  idx_l_1 < idx_l_2 and (l_1.n1 == l_2.n2) and (l_1.n2 == l_2.n1)
+            for idx_d, d     in enumerate(demands)
+            for t            in syst.T
+        ), name="loop_prevention"
     )
     
     # Maximum Tx/Rx Connection
@@ -139,7 +162,7 @@ def offline_wind(gss, haps, links, demands):
                ) <= n.N_TX
             for idx_n, n in enumerate(gss + haps)
             for idx_d, d in enumerate(demands)
-            for t        in sys.T
+            for t        in syst.T
         ), name="max_tx_connections"
     )
     
@@ -151,44 +174,43 @@ def offline_wind(gss, haps, links, demands):
                ) <= n.N_RX
             for idx_n, n in enumerate(gss + haps)
             for idx_d, d in enumerate(demands)
-            for t        in sys.T
+            for t        in syst.T
         ), name="max_rx_connections"
     )
     
     # QKP on HAPs and GSs
     m.addConstrs(
         (
-            a[idx_l, t] >= sys.THETA * sum(r_2[idx_l, idx_d, t]
-                                           for idx_d, d in enumerate(demands)
-                                          )
+            sum(a[idx_l, tp]
+                for tp in range(t)
+               ) >= syst.THETA * sum(r_2[idx_l, idx_d, t]
+                                     for idx_d, d in enumerate(demands)
+                                    ) * STORAGE_SCALE
             for idx_l, l in enumerate(links)
-            for t        in sys.T
+            for t        in syst.T
         ), name="qkp_min_capacity"
     )
     
     m.addConstrs(
         (
-            a[idx_l, t+1] == a[idx_l, t] + l.K_MAX[t] - sys.THETA * sum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
-                                                                        for idx_d, d in enumerate(demands)
-                                                                       )
+            a[idx_l, t] == syst.THETA * (l.K_MAX[t] * KEY_RATE_SCALE - sum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
+                                                                           for idx_d, d in enumerate(demands)
+                                                                          )
+                                        ) * STORAGE_SCALE
             for idx_l, l in enumerate(links)
-            for t        in sys.T[:-1]
+            for t        in syst.T
         ), name="qkp_sequence"
     )
     
-    m.addConstrs(
-        (
-            a[idx_l, 0] == 0
-            for idx_l, l in enumerate(links)
-        ), name="qkp_init"
-    )
-    
-    m.addConstrs(
-        (
-            a[idx_l, t] <= min(l.n1.A_MAX, l.n2.A_MAX)
-            for idx_l, l in enumerate(links)
-        ), name="qkp_max_capacity"
-    )
+    # m.addConstrs(
+    #     (
+    #         sum(a[idx_l, tp]
+    #             for tp in range(t)
+    #            ) <= min(l.n1.A_MAX, l.n2.A_MAX) * STORAGE_SCALE
+    #         for idx_l, l in enumerate(links)
+    #         for t        in syst.T
+    #     ), name="qkp_max_capacity"
+    # )
 
     m.optimize()
     
@@ -197,14 +219,21 @@ def offline_wind(gss, haps, links, demands):
 
         # Store solutions as dict of numpy arrays
         solution = {
-            "r_1": {k: v.X / KEY_RATE_SCALE for k, v in r_1.items()},
-            "r_2": {k: v.X / KEY_RATE_SCALE for k, v in r_2.items()},
-            "r_h": {k: v.X / KEY_RATE_SCALE for k, v in r_h.items()},
-            "a": {k: v.X / KEY_RATE_SCALE for k, v in a.items()},
+            "r_1": {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_1.items()},
+            "r_2": {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_2.items()},
+            "r_h": {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_h.items()},
+            "a": {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in a.items()},
             "z": {k: v.X for k, v in z.items()}
         }
+
+        pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
+        pp.pprint(solution)
+
+        # for idx_l, l in enumerate(links):
+        #     for t in syst.T:
+        #         print(f"K_MAX[{idx_l}][{t}]: {l.K_MAX[t]}")
         
-        print(solution)
+        #print(solution)
     else:
         print("No optimal solution found.")
         solution = None

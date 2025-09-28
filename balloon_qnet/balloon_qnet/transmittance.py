@@ -1,6 +1,7 @@
 from matplotlib.pyplot import show
 from argparse import ArgumentParser
 import balloon_qnet.lowtran_piccia as lowtran
+import sys
 
 def horizontal(altitude, distance, wavelength, ihaze = 5):
     p = ArgumentParser(description = "Lowtran 7 interface")
@@ -36,7 +37,10 @@ def horizontal(altitude, distance, wavelength, ihaze = 5):
     p.add_argument("-s", "--short", help = "shortest wavelength [nm]", type = float, default = 200)
     p.add_argument("-l", "--long", help = "longest wavelength [nm]", type = float, default = 30000)
     p.add_argument("-step", help = "wavelength step size [cm^-1]", type = float, default = 20)
-    P = p.parse_args()
+    if "ipykernel" in sys.modules:
+        P = p.parse_args(args=[])  # ignore Jupyter extra args
+    else:
+        P = p.parse_args()
 
     context = {
         "model": 5, # subarctic winter
@@ -91,7 +95,10 @@ def slant(altitude_1, altitude_2, wavelength, zenith_angle, ihaze = 5):
     p.add_argument("-s", "--short", help = "shortest wavelength [nm]", type = float, default = 200)
     p.add_argument("-l", "--long", help = "longest wavelength [nm]", type = float, default = 30000)
     p.add_argument("-step", help = "wavelength step size [cm^-1]", type = float, default = 20)
-    P = p.parse_args()
+    if "ipykernel" in sys.modules:
+        P = p.parse_args(args=[])  # ignore Jupyter extra args
+    else:
+        P = p.parse_args()
 
     context = {
         "model": 5, # subarctic winter

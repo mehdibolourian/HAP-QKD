@@ -446,3 +446,187 @@ def plot_key_rate_stratotegic(p_all, fog, rain, snow):
 
     plt.tight_layout()
     plt.show()
+
+def plot_transmittance_stratotegic_real(n=5, d_min_t=0, d_max_t=8): #86400
+    """
+    Plot theoretical and simulated transmittance for a balloon trajectory over time.
+    df : pandas.DataFrame with ["Time_s", "Longitude_deg", "Latitude_deg", "Altitude_m"]
+    ts : transmittance simulation module/object with .theoretical_eff and .simulated_eff
+    """
+    # Filter integer timestamps
+    df_filtered = df[df["Time_s"] % 1 == 0].reset_index(drop=True)
+
+    # Time range (0 to 86400 sec default)
+    times = df_filtered["Time_s"].values
+    mask = (times >= d_min_t) & (times <= d_max_t)
+    times = times[mask]
+
+    # Distances for each timestamp (LoS distance in km)
+    distances = []
+    for _, row in df_filtered[mask].iterrows():
+        lat = math.radians(row["Latitude_deg"])
+        lon = math.radians(row["Longitude_deg"])
+        alt = row["Altitude_m"] / 1000  # km
+        # Simplify: use alt as proxy distance (or replace with real LoS calc if needed)
+        distances.append(alt)  
+    
+    # Compute efficiencies
+    eta_theory = [ts.theoretical_eff(distance=d, h_balloons=15, n=n) for d in distances]
+    eta_sim    = [ts.simulated_eff(distance=d, h_balloons=15, n=n) for d in distances]
+
+    # Plot
+    plt.figure(figsize=(12,6))
+    plt.plot(times, eta_theory, label="Theoretical Transmittance", color="blue")
+    plt.plot(times, eta_sim, label="Simulated Transmittance", color="red", linestyle="--")
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("Transmittance (η)")
+    plt.title("Transmittance vs Time (Full-day Balloon Trajectory)")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+
+def plot_skr_stratotegic_real(n=5, d_min_t=0, d_max_t=8):
+    """
+    Plot theoretical and simulated SKR for a balloon trajectory over time.
+    df : pandas.DataFrame with ["Time_s", "Longitude_deg", "Latitude_deg", "Altitude_m"]
+    ts : transmittance simulation module/object with .theoretical_eff, .simulated_eff, .compute_skr
+    """
+    df_filtered = df[df["Time_s"] % 1 == 0].reset_index(drop=True)
+
+    times = df_filtered["Time_s"].values
+    mask = (times >= d_min_t) & (times <= d_max_t)
+    times = times[mask]
+
+    distances = []
+    for _, row in df_filtered[mask].iterrows():
+        alt = row["Altitude_m"] / 1000  # km
+        distances.append(alt)
+
+    # Compute SKRs
+    skr_theory = []
+    skr_sim    = []
+    for d in distances:
+        eta_t = ts.theoretical_eff(distance=d, h_balloons=15, n=n)
+        eta_s = ts.simulated_eff(distance=d, h_balloons=15, n=n)
+        skr_theory.append(ts.compute_skr(eta_t))
+        skr_sim.append(ts.compute_skr(eta_s))
+
+    # Plot
+    plt.figure(figsize=(12,6))
+    plt.plot(times, skr_theory, label="Theoretical SKR", color="green")
+    plt.plot(times, skr_sim, label="Simulated SKR", color="orange", linestyle="--")
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("SKR (bps)")
+    plt.title("Secret Key Rate vs Time (Full-day Balloon Trajectory)")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+def plot_connectivity_graph(gnodes, hnodes, links):
+    """
+    Plot connectivity graph of Ground Stations (GS) and HAPs.
+    
+    Parameters:
+    -----------
+    gnodes : list
+        List of GS objects. Each should have attributes 'lon' and 'lat'.
+    hnodes : list
+        List of HAP objects. Each should have attributes 'lon' and 'lat'.
+        If HAP has a trajectory over time, use the initial position: lon[0], lat[0].
+    links : list
+        List of link objects. Each should have attributes 'node1' and 'node2'.
+        node1 and node2 can be objects from gnodes/hnodes.
+    """
+    G = nx.Graph()
+    
+    # Add GS nodes
+    for gs_node in gnodes:
+        G.add_node(gs_node, pos=(gs_node.la, gs_node.lg), type="GS")
+    
+    # Add HAP nodes (initial position)
+    for hap_node in hnodes:
+        G.add_node(hap_node, pos=(hap_node.la[0], hap_node.lg[0]), type="HAP")
+    
+    # Add edges based on links
+    for l in links:
+        n1, n2 = l.n1, l.n2
+        if n1 in gnodes + hnodes and n2 in gnodes + hnodes:
+            # classify edge type for plotting
+            if (n1 in gnodes and n2 in gnodes) or (n1 in hnodes and n2 in hnodes):
+                edge_type = "intra"
+            else:
+                edge_type = "HAP-GS"
+            G.add_edge(n1, n2, type=edge_type)
+    
+    # Extract positions
+    pos = nx.get_node_attributes(G, "pos")
+    
+    # Separate GS and HAP nodes
+    gs_nodes = [n for n, d in G.nodes(data=True) if d["type"] == "GS"]
+    hap_nodes = [n for n, d in G.nodes(data=True) if d["type"] == "HAP"]
+    
+    plt.figure(figsize=(8, 4))
+    
+    # Draw nodes
+    nx.draw_networkx_nodes(G, pos, nodelist=gs_nodes, node_color="skyblue", node_size=600, label="GS")
+    nx.draw_networkx_nodes(G, pos, nodelist=hap_nodes, node_color="orange", node_size=600, label="HAPs")
+    
+    # Draw edges
+    intra_edges = [(u, v) for u, v, d in G.edges(data=True) if d["type"] == "intra"]
+    hap_edges   = [(u, v) for u, v, d in G.edges(data=True) if d["type"] == "HAP-GS"]
+    
+    nx.draw_networkx_edges(G, pos, edgelist=intra_edges, edge_color="blue", style="solid", alpha=0.5)
+    nx.draw_networkx_edges(G, pos, edgelist=hap_edges, edge_color="orange", style="dashed", alpha=0.7)
+    
+    # Draw labels
+    # Draw labels using 'tag' attribute
+    labels = {}
+    for n, d in G.nodes(data=True):
+        # Use tag if it exists, else fallback to empty string or some identifier
+        labels[n] = getattr(n, "tag", "") if getattr(n, "tag", None) is not None else ""
+    
+    nx.draw_networkx_labels(G, pos, labels=labels, font_size=9, font_weight="bold")
+    
+    plt.title("HAP-QKD Network Connectivity", fontsize=14)
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+def animate_hap_trajectories(times, lons_list, lats_list, hap_names):
+    """
+    Animate HAP trajectories over time using Plotly.
+
+    Parameters
+    ----------
+    times : list or array
+        List of time steps.
+    lons_list : list of lists
+        Each sublist is the longitude trajectory of a HAP over time.
+    lats_list : list of lists
+        Each sublist is the latitude trajectory of a HAP over time.
+    hap_names : list of str
+        Names/IDs of the HAPs (must match number of lons/lats sublists).
+    """
+    # Build DataFrame
+    data = {"time": [], "lat": [], "lon": [], "hap": []}
+    
+    for hap_idx, hap_name in enumerate(hap_names):
+        for t_idx, t in enumerate(times):
+            data["time"].append(t)
+            data["lat"].append(lats_list[hap_idx][t_idx])
+            data["lon"].append(lons_list[hap_idx][t_idx])
+            data["hap"].append(hap_name)
+    
+    df = pd.DataFrame(data)
+    
+    # Plot animated scatter
+    fig = px.scatter(df, x="lat", y="lon", animation_frame="time", color="hap",
+                     range_x=[min(map(min, lats_list)) - 0.1, max(map(max, lats_list)) + 0.1],
+                     range_y=[min(map(min, lons_list)) - 0.1, max(map(max, lons_list)) + 0.1])
+    fig.update_layout(xaxis_title="Latitude", yaxis_title="Longitude")
+    fig.show()
