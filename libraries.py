@@ -42,8 +42,8 @@ import transmittance_simulation as ts
 
 ## Project library files
 from data   import *
-from helper import *
 from plot   import *
+from helper import *
 from setup  import *
 from problems.offline_wind import *
 from problems.planning     import *

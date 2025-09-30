@@ -1,9 +1,8 @@
 from libraries import *
 
 R           = 6371  # Earth's radius in km
-B           = 80e6  # Pulse rate
 R_TX        = 0.1
-R_RX        = 0.3
+R_RX        = 0.4 # 0.3
 LAMBDA      = 1550e-9
 THETA       = 1.22 * LAMBDA / R_TX
 H_W         = 5   # Altitude of snow/rain
@@ -242,6 +241,9 @@ def calculate_key_rate(method, links, fog, rain, snow, syst):
     # Initialize with None for every link so indices match exactly
     K_MAX = [None] * NUM_LINKS
 
+    d_list = []
+    h_list = []
+
     for idx_l, l in enumerate(links):
         # Identify which node is HAP and which is GS
         if isinstance(l.n1, hap) and not isinstance(l.n2, hap):
@@ -285,6 +287,12 @@ def calculate_key_rate(method, links, fog, rain, snow, syst):
         # print(f"d_los: {d_los}")
         # print(f"alpha: {alpha}")
 
+        if idx_l == 0:
+            d_list = d_los
+            h_list = H_h
+    
+            plot_skr("downlink", 5, d_list, h_list)
+
         if method == "plob":
             # Losses
             L_geo = [20 * max(math.log10((R_TX + d_los[t] * 1000 * THETA) / R_RX), 0) for t in syst.T]
@@ -306,18 +314,30 @@ def calculate_key_rate(method, links, fog, rain, snow, syst):
             ETA = [10 ** (-L_t[t] / 10) for t in syst.T]
     
             # Key rate over time
-            K_link = [-B * math.log2(1 - ETA[t]) for t in syst.T]
+            K_link = [-ts.ratesources * ts.sourceeff * math.log2(1 - ETA[t]) for t in syst.T]
 
             # print(f"K_link: {K_link}")
     
             # Save same key rate for both directions
             K_MAX[idx_l] = K_link
         elif method == "theoretical":
-            eta_theory   = [ts.theoretical_eff(distance=d_los[t], h_balloons=H_h[t], n=5) for t in syst.T]
+            # start timer
+            t0 = time.perf_counter()
+            dir = ""
+            if isinstance(l.n1, gs) and isinstance(l.n2, hap): ## Uplink
+                dir = "uplink"
+            else: ## Downlink
+                dir = "downlink"
+            eta_theory = [ts.channel_theory(direction=dir, gs_alt=0, balloon_alt=H_h[t], distance=d_los[t], n_correction=6) for t in syst.T]
             K_MAX[idx_l] = [ts.compute_skr(eta_theory[t]) for t in syst.T]
+            
+            sys.stdout.write("\rProcessing... " + str(idx_l))
+            sys.stdout.flush()
+            #print(f"eta_theory: {eta_theory}, K_MAX[{idx_l}]: {K_MAX[idx_l]}, d_los: {d_los}")
         elif method == "simulation":
-            eta_sim      = [ts.simulated_eff(distance=d_los[t], h_balloons=H_h[t], n=5) for t in syst.T]
+            eta_sim      = [ts.simulated_eff(distance=d_los[t], h_balloons=H_h[t], n=6) for t in syst.T]
             K_MAX[idx_l] = [ts.compute_skr(eta_sim[t]) for t in syst.T]
+            #print(f"eta_sim: {eta_sim}, K_MAX[{idx_l}]: {K_MAX[idx_l]}, d_los: {d_los}")
     return K_MAX
 
 

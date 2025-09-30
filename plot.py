@@ -486,7 +486,6 @@ def plot_transmittance_stratotegic_real(n=5, d_min_t=0, d_max_t=8): #86400
     plt.legend()
     plt.show()
 
-
 def plot_skr_stratotegic_real(n=5, d_min_t=0, d_max_t=8):
     """
     Plot theoretical and simulated SKR for a balloon trajectory over time.
@@ -517,6 +516,48 @@ def plot_skr_stratotegic_real(n=5, d_min_t=0, d_max_t=8):
     plt.figure(figsize=(12,6))
     plt.plot(times, skr_theory, label="Theoretical SKR", color="green")
     plt.plot(times, skr_sim, label="Simulated SKR", color="orange", linestyle="--")
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("SKR (bps)")
+    plt.title("Secret Key Rate vs Time (Full-day Balloon Trajectory)")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+def plot_skr(dir, n, d_list, h_list):
+    """
+    Plot theoretical and simulated SKR for a balloon trajectory over time.
+    """
+    times = range(len(d_list))
+
+    # Compute SKRs
+    skr_theory = []
+    skr_sim    = []
+    skr_plob_theory = []
+    skr_plob_sim    = []
+    spinner = ['|', '/', '-', '\\']
+    for idx_d, d in enumerate(d_list):
+        eta_t = ts.channel_theory(direction=dir, gs_alt=0, balloon_alt=h_list[idx_d], distance=d, n_correction=n)
+        eta_s = ts.channel_simulation(direction=dir, gs_alt=0, balloon_alt=h_list[idx_d], distance=d, n_correction=n)
+
+        # eta_t = ts.theoretical_eff(distance=d, h_balloons=h_list[idx_d], n=n)
+        # eta_s = ts.simulated_eff(distance=d, h_balloons=h_list[idx_d], n=n)
+        
+        skr_theory.append(ts.compute_skr(eta_t))
+        skr_sim.append(ts.compute_skr(eta_s))
+        skr_plob_theory.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_t))
+        skr_plob_sim.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_s))
+
+        # print(f"skr_plob_theory: {skr_plob_theory[idx_d]}, skr_plob_sim: {skr_plob_sim[idx_d]}")
+        sys.stdout.write("\rProcessing... " + spinner[idx_d % len(spinner)])
+        sys.stdout.flush()
+
+    # Plot
+    plt.figure(figsize=(12,6))
+    plt.plot(times, skr_theory, label="Theoretical SKR", color="green")
+    plt.plot(times, skr_sim, label="Simulated SKR", color="orange", linestyle="--")
+    plt.plot(times, skr_plob_theory, label="Theoretical SKR Upper Bound", color="blue", linestyle="-.")
+    plt.plot(times, skr_plob_sim, label="Simulated SKR Upper Bound", color="red", linestyle=":")
 
     plt.xlabel("Time (s)")
     plt.ylabel("SKR (bps)")

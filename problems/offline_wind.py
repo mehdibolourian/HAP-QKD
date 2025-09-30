@@ -226,8 +226,8 @@ def offline_wind(gss, haps, links, demands):
             "z": {k: v.X for k, v in z.items()}
         }
 
-        pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
-        pp.pprint(solution)
+        # pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
+        # pp.pprint(solution)
 
         # for idx_l, l in enumerate(links):
         #     for t in syst.T:

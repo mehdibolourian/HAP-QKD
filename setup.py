@@ -4,8 +4,10 @@ SYNTH_STRATO    = 1    ## 0: Wind, 1: Stratotegic Data
 
 COORDINATE_SCALE = 1 #1e-3
 KEY_RATE_SCALE   = 1e-1
-NUM_TIME_SLOTS   = 3 if SYNTH_STRATO else 4
+NUM_TIME_SLOTS   = 5 if SYNTH_STRATO else 4
 STORAGE_SCALE    = 1
+
+MODEL_KEY_RATE   = "theoretical" # "plob", "theoretical", "simulation"
 
 ## T     --> 12 subcarriers with 15 kHz spacing for 1 ms interval
 ## THETA --> 1 sec.
@@ -42,7 +44,7 @@ def init_setup():
     fog  = [0] * len(syst.T)
     rain = [0] * len(syst.T)
     snow = [0] * len(syst.T)
-    K_MAX = calculate_key_rate("plob", links, fog, rain, snow, syst)
+    K_MAX = calculate_key_rate(MODEL_KEY_RATE, links, fog, rain, snow, syst)
 
     # Compute efficiencies
     eta_theory = ts.theoretical_eff(distance=25, h_balloons=15, n=5)
@@ -121,17 +123,17 @@ def init_setup_real():
     fog   = [0] * len(syst.T)
     rain  = [0] * len(syst.T)
     snow  = [0] * len(syst.T)
-    K_MAX = calculate_key_rate("plob", links, fog, rain, snow, syst) # method: "plob", "theoretical", "simulation"
+    K_MAX = calculate_key_rate(MODEL_KEY_RATE, links, fog, rain, snow, syst) # method: "plob", "theoretical", "simulation"
 
     #print(f"K_MAX:{K_MAX}")
 
-    # Compute efficiencies
-    eta_theory = ts.theoretical_eff(distance=25, h_balloons=15, n=5)
-    eta_sim    = ts.simulated_eff(distance=25, h_balloons=15, n=5)
+    # # Compute efficiencies
+    # eta_theory = ts.theoretical_eff(distance=25, h_balloons=15, n=5)
+    # eta_sim    = ts.simulated_eff(distance=25, h_balloons=15, n=5)
     
-    # Compute SKRs
-    skr_theory = ts.compute_skr(eta_theory)
-    skr_sim    = ts.compute_skr(eta_sim)
+    # # Compute SKRs
+    # skr_theory = ts.compute_skr(eta_theory)
+    # skr_sim    = ts.compute_skr(eta_sim)
     
     # print(f"Theoretical efficiency: {eta_theory:.4f} -> SKR: {skr_theory:.2f} kbit/s")
     # print(f"Simulated  efficiency: {eta_sim:.4f} -> SKR: {skr_sim:.2f} kbit/s")
