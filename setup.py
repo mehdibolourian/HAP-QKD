@@ -4,7 +4,7 @@ SYNTH_STRATO    = 1    ## 0: Wind, 1: Stratotegic Data
 
 COORDINATE_SCALE = 1 #1e-3
 KEY_RATE_SCALE   = 1e-1
-NUM_TIME_SLOTS   = 5 if SYNTH_STRATO else 4
+NUM_TIME_SLOTS   = 50 if SYNTH_STRATO else 4
 STORAGE_SCALE    = 1
 
 MODEL_KEY_RATE   = "theoretical" # "plob", "theoretical", "simulation"

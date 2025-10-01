@@ -9,19 +9,22 @@ from balloon_qnet.free_space_losses import (
     compute_channel_length,
     CachedChannel
 )
+from balloon_qnet.QEuropeFunctions import *
 
 # Parameters (you can adjust these)
 wavelength = 1550e-9
 ground_station_alt = 0 # 0.020
 obs_ratio_ground = 0.3
+obs_ratio_hap = 0.3
 Cn0 = 9.6e-14
 u_rms = 10
 pointing_error = 1e-6
 Qonnector_meas_succ = 0.85
 tracking_efficiency = 0.8
 rx_aperture_ground = 0.6 # 0.3
+rx_aperture_hap = 0.6 # 0.3
 W0 = 0.1
-simtime = 500   # shorter for testing
+simtime = 50000   # shorter for testing
 
 #Parameters and function to calculate the secret key rate
 ratesources = 80e6
@@ -73,8 +76,6 @@ def channel_theory(direction, gs_alt, balloon_alt, distance, n_correction):
 
     Tatm = transmittance.slant(gs_alt, balloon_alt, params["wavelength"] * 1e9, zenith_angle)
 
-    print(f"Tatm: {Tatm}")
-
     if direction == "uplink":
         channel = UplinkChannel(
             params["W0"], params["rx_aperture_up"], params["obs_ratio"],
@@ -106,6 +107,56 @@ def channel_theory(direction, gs_alt, balloon_alt, distance, n_correction):
 # ---------------------------
 # Simulated efficiency
 # ---------------------------
+# def channel_simulation(direction, gs_alt, balloon_alt, distance, n_correction, simtime=simtime):
+#     """
+#     direction: "uplink" or "downlink"
+#     gs_alt, balloon_alt, distance: geometry (km)
+#     params: dict of channel parameters
+#     n_correction: AO correction index
+#     simtime: number of channel uses to simulate
+#     """
+#     zenith_angle = compute_zenith_angle(0, balloon_alt, distance)
+
+#     Tatm = transmittance.slant(gs_alt, balloon_alt, params["wavelength"] * 1e9, zenith_angle)
+
+#     if direction == "uplink":
+#         channel = UplinkChannel(
+#             params["W0"], params["rx_aperture_up"], params["obs_ratio"],
+#             n_correction, params["Cn0"], params["u_rms"],
+#             params["wavelength"], gs_alt, balloon_alt, zenith_angle,
+#             pointing_error=params["pointing_error"],
+#             tracking_efficiency=params["tracking_efficiency"],
+#             Tatm=Tatm
+#         )
+#     elif direction == "downlink":
+#         channel = DownlinkChannel(
+#             params["W0"], params["rx_aperture_down"], params["obs_ratio"],
+#             n_correction, params["Cn0"], params["u_rms"],
+#             params["wavelength"], gs_alt, balloon_alt, zenith_angle,
+#             pointing_error=params["pointing_error"],
+#             tracking_efficiency=params["tracking_efficiency"],
+#             Tatm=Tatm
+#         )
+#     else:
+#         raise ValueError("direction must be 'uplink' or 'downlink'")
+
+#     # Simulate by sampling loss probabilities
+#     a = channel._compute_loss_probability(distance, math.ceil(simtime / params["init_time"]))
+
+#     # Channel efficiency = fraction of photons surviving
+#     efficiency = 1.0 - np.mean(a)  # or another stat depending on how a is defined
+    
+#     # Monte Carlo simulate
+#     # sent = simtime / params["init_time"]
+#     # received = np.random.binomial(sent, 1 - a.mean())  # approximate survival
+#     # efficiency = received / sent
+
+#     # print("a type:", type(a), "len:", len(a))
+#     # a = np.asarray(a)
+#     # print("a dtype:", a.dtype, "min,max,mean:", a.min(), a.max(), a.mean())
+#     # print("first 20:", a[:20])
+#     return efficiency
+
 def channel_simulation(direction, gs_alt, balloon_alt, distance, n_correction, simtime=simtime):
     """
     direction: "uplink" or "downlink"
@@ -114,9 +165,18 @@ def channel_simulation(direction, gs_alt, balloon_alt, distance, n_correction, s
     n_correction: AO correction index
     simtime: number of channel uses to simulate
     """
-    zenith_angle = zenith_angle = compute_zenith_angle(0, balloon_alt, distance)
 
+    zenith_angle = compute_zenith_angle(0, balloon_alt, distance)
+    
+    # Compute channel parameters
     Tatm = transmittance.slant(gs_alt, balloon_alt, params["wavelength"] * 1e9, zenith_angle)
+
+    # Initialize network
+    net = QEurope("EuropeNet")
+
+    # Add GS and HAP nodes
+    net.Add_Qonnector("QonnectorGS")
+    net.Add_Qonnector("QonnectorHAP")
 
     if direction == "uplink":
         channel = UplinkChannel(
@@ -142,19 +202,178 @@ def channel_simulation(direction, gs_alt, balloon_alt, distance, n_correction, s
     # Simulate by sampling loss probabilities
     a = channel._compute_loss_probability(distance, math.ceil(simtime / params["init_time"]))
 
-    # Channel efficiency = fraction of photons surviving
-    efficiency = 1.0 - np.mean(a)  # or another stat depending on how a is defined
-    
-    # Monte Carlo simulate
-    # sent = simtime / params["init_time"]
-    # received = np.random.binomial(sent, 1 - a.mean())  # approximate survival
-    # efficiency = received / sent
+    dulink = CachedChannel(a)
 
-    # print("a type:", type(a), "len:", len(a))
-    # a = np.asarray(a)
-    # print("a dtype:", a.dtype, "min,max,mean:", a.min(), a.max(), a.mean())
-    # print("first 20:", a[:20])
-    return efficiency
+    # Connect GS ↔ HAP
+    net.connect_qonnectors("QonnectorGS", "QonnectorHAP", distance=balloon_alt, loss_model=dulink)
+
+    # Retrieve nodes
+    gs = net.network.get_node("QonnectorGS")
+    hap = net.network.get_node("QonnectorHAP")
+
+    # BB84 protocol (GS receives, HAP sends)
+    send = SendBB84(hap, Qonnector_init_succ, Qonnector_init_flip, gs)
+    send.start()
+    receive = ReceiveProtocol(gs, params["detector_eff"], Qonnector_meas_flip, True, hap)
+    receive.start()
+
+    # Run simulation
+    ns.sim_run(duration=simtime)
+
+    # Post-processing
+    L1 = Sifting(gs.QlientKeys[hap.name], hap.QlientKeys[gs.name])
+    chan_eff = len(hap.QlientKeys[gs.name]) / len(gs.QlientKeys[hap.name])
+
+    # if direction == "downlink":
+    #     print(f"[Downlink] Balloon Altitude: {balloon_alt} km, distance: {distance} km, AO: {n_correction}, Efficiency: {chan_eff:.4f}")
+    # else:
+    #     print(f"[Uplink] Balloon Altitude: {balloon_alt} km, distance: {distance} km, AO: {n_correction}, Efficiency: {chan_eff:.4f}")
+    
+    return chan_eff
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# def simulate_downlink(h_balloons, distance, n):
+#     """
+#     Simulate a downlink quantum channel from HAP (balloon) to Ground Station (GS).
+#     """
+
+#     zenith_angle = compute_zenith_angle(0, h_balloons, distance)
+    
+#     # Compute channel parameters
+#     height_balloon = compute_channel_length(ground_station_alt, h_balloons, zenith_angle)
+#     transmittance_down = transmittance.slant(ground_station_alt, h_balloons, wavelength*1e9, zenith_angle)
+
+#     # Initialize network
+#     net = QEurope("EuropeNet")
+
+#     # Add GS and HAP nodes
+#     net.Add_Qonnector("QonnectorGS")
+#     net.Add_Qonnector("QonnectorHAP")
+
+#     # Define downlink channel model
+#     downlink_channel = DownlinkChannel(
+#         W0, rx_aperture_ground, obs_ratio_ground, n, Cn0, u_rms,
+#         wavelength, ground_station_alt, h_balloons, zenith_angle,
+#         pointing_error=pointing_error,
+#         tracking_efficiency=tracking_efficiency,
+#         Tatm=transmittance_down
+#     )
+#     a = downlink_channel._compute_loss_probability(height_balloon, math.ceil(simtime/Qonnector_init_time))
+#     downlink = CachedChannel(a)
+
+#     # Connect GS ↔ HAP
+#     net.connect_qonnectors("QonnectorGS", "QonnectorHAP", distance=height_balloon, loss_model=downlink)
+
+#     # Retrieve nodes
+#     gs = net.network.get_node("QonnectorGS")
+#     hap = net.network.get_node("QonnectorHAP")
+
+#     # BB84 protocol (GS receives, HAP sends)
+#     send = SendBB84(hap, Qonnector_init_succ, Qonnector_init_flip, gs)
+#     send.start()
+#     receive = ReceiveProtocol(gs, Qonnector_meas_succ, Qonnector_meas_flip, True, hap)
+#     receive.start()
+
+#     # Run simulation
+#     ns.sim_run(duration=simtime)
+
+#     # Post-processing
+#     L1 = Sifting(gs.QlientKeys[hap.name], hap.QlientKeys[gs.name])
+#     chan_eff = len(hap.QlientKeys[gs.name]) / len(gs.QlientKeys[hap.name])
+
+#     print(f"[Downlink] Balloon Altitude: {h_balloons} km, AO: {n}, Efficiency: {chan_eff:.4f}")
+#     return chan_eff
+
+# def simulate_uplink(h_balloons, distance, n):
+#     """
+#     Simulate an uplink quantum channel from Ground Station (GS) to HAP (balloon).
+#     """
+
+#     zenith_angle = compute_zenith_angle(0, h_balloons, distance)
+    
+#     # Compute channel parameters
+#     height_balloon = compute_channel_length(ground_station_alt, h_balloons, zenith_angle)
+#     transmittance_up = transmittance.slant(ground_station_alt, h_balloons, wavelength*1e9, zenith_angle)
+
+#     # Initialize network
+#     net = QEurope("EuropeNet")
+
+#     # Add GS and HAP nodes
+#     net.Add_Qonnector("QonnectorGS")
+#     net.Add_Qonnector("QonnectorHAP")
+
+#     # Define uplink channel model
+#     uplink_channel = UplinkChannel(
+#         W0, rx_aperture_hap, obs_ratio_hap, n, Cn0, u_rms,
+#         wavelength, ground_station_alt, h_balloons, zenith_angle,
+#         pointing_error=pointing_error,
+#         tracking_efficiency=tracking_efficiency,
+#         Tatm=transmittance_up
+#     )
+#     a = uplink_channel._compute_loss_probability(height_balloon, math.ceil(simtime/Qonnector_init_time))
+#     uplink = CachedChannel(a)
+
+#     # Connect GS ↔ HAP
+#     net.connect_qonnectors("QonnectorGS", "QonnectorHAP", distance=height_balloon, loss_model=uplink)
+
+#     # Retrieve nodes
+#     gs = net.network.get_node("QonnectorGS")
+#     hap = net.network.get_node("QonnectorHAP")
+
+#     # BB84 protocol (GS sends, HAP receives)
+#     send = SendBB84(gs, Qonnector_init_succ, Qonnector_init_flip, hap)
+#     send.start()
+#     receive = ReceiveProtocol(hap, Qonnector_meas_succ, Qonnector_meas_flip, True, gs)
+#     receive.start()
+
+#     # Run simulation
+#     ns.sim_run(duration=simtime)
+
+#     # Post-processing
+#     L1 = Sifting(hap.QlientKeys[gs.name], gs.QlientKeys[hap.name])
+#     chan_eff = len(gs.QlientKeys[hap.name]) / len(hap.QlientKeys[gs.name])
+
+#     print(f"[Uplink] Balloon Altitude: {h_balloons} km, AO: {n}, Efficiency: {chan_eff:.4f}")
+#     return chan_eff 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

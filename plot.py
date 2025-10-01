@@ -524,47 +524,47 @@ def plot_skr_stratotegic_real(n=5, d_min_t=0, d_max_t=8):
     plt.legend()
     plt.show()
 
-def plot_skr(dir, n, d_list, h_list):
-    """
-    Plot theoretical and simulated SKR for a balloon trajectory over time.
-    """
-    times = range(len(d_list))
+# def plot_skr(dir, n, d_list, h_list):
+#     """
+#     Plot theoretical and simulated SKR for a balloon trajectory over time.
+#     """
+#     times = range(len(d_list))
 
-    # Compute SKRs
-    skr_theory = []
-    skr_sim    = []
-    skr_plob_theory = []
-    skr_plob_sim    = []
-    spinner = ['|', '/', '-', '\\']
-    for idx_d, d in enumerate(d_list):
-        eta_t = ts.channel_theory(direction=dir, gs_alt=0, balloon_alt=h_list[idx_d], distance=d, n_correction=n)
-        eta_s = ts.channel_simulation(direction=dir, gs_alt=0, balloon_alt=h_list[idx_d], distance=d, n_correction=n)
+#     # Compute SKRs
+#     skr_theory = []
+#     skr_sim    = []
+#     skr_plob_theory = []
+#     skr_plob_sim    = []
+#     spinner = ['|', '/', '-', '\\']
+#     for idx_d, d in enumerate(d_list):
+#         eta_t = ts.channel_theory(direction=dir, gs_alt=0, balloon_alt=h_list[idx_d], distance=d, n_correction=n)
+#         eta_s = ts.channel_simulation(direction=dir, gs_alt=0, balloon_alt=h_list[idx_d], distance=d, n_correction=n)
 
-        # eta_t = ts.theoretical_eff(distance=d, h_balloons=h_list[idx_d], n=n)
-        # eta_s = ts.simulated_eff(distance=d, h_balloons=h_list[idx_d], n=n)
+#         # eta_t = ts.theoretical_eff(distance=d, h_balloons=h_list[idx_d], n=n)
+#         # eta_s = ts.simulated_eff(distance=d, h_balloons=h_list[idx_d], n=n)
         
-        skr_theory.append(ts.compute_skr(eta_t))
-        skr_sim.append(ts.compute_skr(eta_s))
-        skr_plob_theory.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_t))
-        skr_plob_sim.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_s))
+#         skr_theory.append(ts.compute_skr(eta_t))
+#         skr_sim.append(ts.compute_skr(eta_s))
+#         skr_plob_theory.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_t))
+#         skr_plob_sim.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_s))
 
-        # print(f"skr_plob_theory: {skr_plob_theory[idx_d]}, skr_plob_sim: {skr_plob_sim[idx_d]}")
-        sys.stdout.write("\rProcessing... " + spinner[idx_d % len(spinner)])
-        sys.stdout.flush()
+#         # print(f"skr_plob_theory: {skr_plob_theory[idx_d]}, skr_plob_sim: {skr_plob_sim[idx_d]}")
+#         sys.stdout.write("\rProcessing... " + spinner[idx_d % len(spinner)])
+#         sys.stdout.flush()
 
-    # Plot
-    plt.figure(figsize=(12,6))
-    plt.plot(times, skr_theory, label="Theoretical SKR", color="green")
-    plt.plot(times, skr_sim, label="Simulated SKR", color="orange", linestyle="--")
-    plt.plot(times, skr_plob_theory, label="Theoretical SKR Upper Bound", color="blue", linestyle="-.")
-    plt.plot(times, skr_plob_sim, label="Simulated SKR Upper Bound", color="red", linestyle=":")
+#     # Plot
+#     plt.figure(figsize=(12,6))
+#     plt.plot(times, skr_theory, label="Theoretical SKR", color="green")
+#     plt.plot(times, skr_sim, label="Simulated SKR", color="orange", linestyle="--")
+#     plt.plot(times, skr_plob_theory, label="Theoretical SKR Upper Bound", color="blue", linestyle="-.")
+#     plt.plot(times, skr_plob_sim, label="Simulated SKR Upper Bound", color="red", linestyle=":")
 
-    plt.xlabel("Time (s)")
-    plt.ylabel("SKR (bps)")
-    plt.title("Secret Key Rate vs Time (Full-day Balloon Trajectory)")
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+#     plt.xlabel("Time (s)")
+#     plt.ylabel("SKR (bps)")
+#     plt.title("Secret Key Rate vs Time (Full-day Balloon Trajectory)")
+#     plt.grid(True)
+#     plt.legend()
+#     plt.show()
 
 def plot_connectivity_graph(gnodes, hnodes, links):
     """
@@ -671,3 +671,82 @@ def animate_hap_trajectories(times, lons_list, lats_list, hap_names):
                      range_y=[min(map(min, lons_list)) - 0.1, max(map(max, lons_list)) + 0.1])
     fig.update_layout(xaxis_title="Latitude", yaxis_title="Longitude")
     fig.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def compute_point(args):
+    """
+    Worker function for one (distance, height).
+    """
+    d, h, dir, n = args
+    eta_t = ts.channel_theory(direction=dir, gs_alt=0, balloon_alt=h, distance=d, n_correction=n)
+    eta_s = ts.channel_simulation(direction=dir, gs_alt=0, balloon_alt=h, distance=d, n_correction=n)
+    # print(f"dir: {dir}, h: {h}, d: {d}, n: {n}")
+    # print(f"eta_t: {eta_t}, eta_s: {eta_s}")
+
+    skr_t   = ts.compute_skr(eta_t)
+    skr_s   = ts.compute_skr(eta_s)
+    skr_pt  = -ts.ratesources * ts.sourceeff * math.log2(1 - eta_t)
+    skr_ps  = -ts.ratesources * ts.sourceeff * math.log2(1 - eta_s)
+    return skr_t, skr_s, skr_pt, skr_ps
+
+def plot_skr(dir, n, d_list, h_list, max_workers=20):
+    """
+    Parallelized SKR plotter across CPU cores with progress bar.
+    """
+    times = range(len(d_list))
+
+    # Pack args
+    tasks = [(d, h_list[idx], dir, n) for idx, d in enumerate(d_list)]
+
+    skr_theory, skr_sim, skr_plob_theory, skr_plob_sim = [], [], [], []
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Wrap with tqdm for progress tracking
+        for skr_t, skr_s, skr_pt, skr_ps in tqdm(
+            executor.map(compute_point, tasks),
+            total=len(tasks),
+            desc="Computing SKR"
+        ):
+            skr_theory.append(skr_t)
+            skr_sim.append(skr_s)
+            skr_plob_theory.append(skr_pt)
+            skr_plob_sim.append(skr_ps)
+
+    print("\nAll points computed.")
+
+    # Plot
+    plt.figure(figsize=(12,6))
+    plt.plot(times, skr_theory, label="Theoretical SKR", color="green")
+    plt.plot(times, skr_sim, label="Simulated SKR", color="orange", linestyle="--")
+    plt.plot(times, skr_plob_theory, label="Theoretical SKR Upper Bound", color="blue", linestyle="-.")
+    plt.plot(times, skr_plob_sim, label="Simulated SKR Upper Bound", color="red", linestyle=":")
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("SKR (bps)")
+    plt.title("Secret Key Rate vs Time (Full-day Balloon Trajectory)")
+    plt.grid(True)
+    plt.legend()
+    plt.show()

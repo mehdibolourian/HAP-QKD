@@ -1205,8 +1205,8 @@ class DownlinkChannel(QuantumErrorModel):
                 check = np.sqrt(self.wavelength*length*1e3)
         else:
                 check = 0.36*np.sqrt(self.wavelength*length*1e3)* (rytov_var**(-3/5))
-        if self.rx_aperture < check:
-            print("Warning ! The aperture averaging hypothesis is not valid for this set of parameters. Use bigger values of receiving aperture size")
+        # if self.rx_aperture < check:
+        #     print("Warning ! The aperture averaging hypothesis is not valid for this set of parameters. Use bigger values of receiving aperture size")
         
         scint_index = self._compute_scintillation_index_spherical(rytov_var, z)
         r0 = self._compute_coherence_width_gaussian(z)
@@ -1218,8 +1218,8 @@ class DownlinkChannel(QuantumErrorModel):
         # Check if we are below the Rayleigh criterion
         bj_wvln = np.sqrt(bj2)/(2*np.pi)
         bj_wlvn_max = np.max(bj_wvln)
-        if bj_wlvn_max > 0.05:
-            print(f" Warning ! The maximum Zernike coefficient std in wavelenghts is {bj_wlvn_max}. The SMF PDF is accurate below the Rayleigh criterion (0.05). You may need to use higher order of correction or smaller integration time of the AO system.")
+        # if bj_wlvn_max > 0.05:
+        #     print(f" Warning ! The maximum Zernike coefficient std in wavelenghts is {bj_wlvn_max}. The SMF PDF is accurate below the Rayleigh criterion (0.05). You may need to use higher order of correction or smaller integration time of the AO system.")
 
         beta_opt = smf.beta_opt(self.obs_ratio)
         eta_smf_max = smf.eta_0(self.obs_ratio, beta_opt)
@@ -1278,8 +1278,8 @@ class DownlinkChannel(QuantumErrorModel):
                 check = np.sqrt(self.wavelength*length*1e3)
         else:
                 check = 0.36*np.sqrt(self.wavelength*length*1e3)* (rytov_var**(-3/5))
-        if self.rx_aperture < check:
-            print("Warning ! The aperture averaging hypothesis is not valid for this set of parameters. Use bigger values of receiving aperture size")
+        # if self.rx_aperture < check:
+        #     print("Warning ! The aperture averaging hypothesis is not valid for this set of parameters. Use bigger values of receiving aperture size")
 
         scint_index = self._compute_scintillation_index_spherical(rytov_var, z)
         r0 = self._compute_coherence_width_gaussian(z)
@@ -1292,8 +1292,8 @@ class DownlinkChannel(QuantumErrorModel):
         # Check if we are below the Rayleigh criterion
         bj_wvln = np.sqrt(bj2)/(2*np.pi)
         bj_wlvn_max = np.max(bj_wvln)
-        if bj_wlvn_max > 0.05:
-            print(f" Warning ! The maximum Zernike coefficient std in wavelenghts is {bj_wlvn_max}. The SMF PDF is accurate below the Rayleigh criterion (0.05). You may need to use higher order of correction or smaller integration time of the AO system.")
+        # if bj_wlvn_max > 0.05:
+        #     print(f" Warning ! The maximum Zernike coefficient std in wavelenghts is {bj_wlvn_max}. The SMF PDF is accurate below the Rayleigh criterion (0.05). You may need to use higher order of correction or smaller integration time of the AO system.")
 
         beta_opt = smf.beta_opt(self.obs_ratio)
         eta_smf_max = smf.eta_0(self.obs_ratio, beta_opt)
