@@ -2,9 +2,9 @@ from libraries import *
 
 SYNTH_STRATO    = 1    ## 0: Wind, 1: Stratotegic Data
 
-COORDINATE_SCALE = 1 #1e-3
-KEY_RATE_SCALE   = 1e-1
-NUM_TIME_SLOTS   = 50 if SYNTH_STRATO else 4
+COORDINATE_SCALE = 1
+KEY_RATE_SCALE   = 1
+NUM_TIME_SLOTS   = 86400 if SYNTH_STRATO else 4
 STORAGE_SCALE    = 1
 
 MODEL_KEY_RATE   = "theoretical" # "plob", "theoretical", "simulation"
@@ -83,18 +83,21 @@ def init_setup_real():
     hnodes  = []
     links   = []
     demands = []
+
+    # Area: 176.2 km x 140.9 km
     
     # Ground Stations (longitude, latitude roughly approximated in degrees)
-    # Venice, Padua, Florence, Siena
     gnodes.append(gs(278.6695, 48.4758, 1, 1, 1e9, "Timmins"))   # Timmins GS
-    gnodes.append(gs(279.3186, 48.7669, 1, 1, 1e9, "IroquoisFalls"))   # IroquoisFalls GS - ~70 km northeast of Timmins
+    gnodes.append(gs(279.3186, 48.7669, 1, 1, 1e9, "Iroquois Falls"))   # IroquoisFalls GS - ~70 km northeast of Timmins
     gnodes.append(gs(277.5669, 49.4169, 1, 1, 1e9, "Kapuskasing"))   # Kapuskasing GS - ~160 km northwest of Timmins
     gnodes.append(gs(278.984, 49.0670, 1, 1, 1e9, "Cochrane"))    # Cochrane GS - ~110 km north of Timmins
-    gnodes.append(gs(279.9674, 48.1512, 1, 1, 1e9, "KirklandLake"))   # KirklandLake GS - ~140 km southeast of Timmins
+    gnodes.append(gs(279.9674, 48.1512, 1, 1, 1e9, "Kirkland Lake"))   # KirklandLake GS - ~140 km southeast of Timmins
     
-    # HAPs at 35 km altitude above Padua and Florence
-    hnodes.append(hap([279]*len(syst.T), [49]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9))  # Stratotegic coordinates
-    hnodes.append(hap([277.85]*len(syst.T), [49.34]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9))  # Moonbeam town center
+    # HAPs at 15 km altitude above Padua and Florence
+    hnodes.append(hap([279]*len(syst.T), [49]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP1"))  # Stratotegic coordinates
+    hnodes.append(hap([277.85]*len(syst.T), [49.34]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP2"))  # Moonbeam town center
+    # HAP3 between Timmins and KirklandLake
+    hnodes.append(hap([279.31845]*len(syst.T), [48.3135]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP3"))
     
     # Update coordinates depending on model choice
     if SYNTH_STRATO == 1:
@@ -118,11 +121,19 @@ def init_setup_real():
     #     print(f"idx: {links.index(l)}, l_n1_tag: {l.n1.tag}, l_n2_tag: {l.n2.tag}")
 
     plot_connectivity_graph(gnodes, hnodes, links)
-    animate_hap_trajectories(syst.T, [hnode.lg for hnode in hnodes], [hnode.la for hnode in hnodes], [f"HAP_{idx_hnode}" for idx_hnode, hnode in enumerate(hnodes)])
+    # animate_hap_trajectories(syst.T, [hnode.lg for hnode in hnodes], [hnode.la for hnode in hnodes], [f"HAP_{idx_hnode}" for idx_hnode, hnode in enumerate(hnodes)])
 
     fog   = [0] * len(syst.T)
     rain  = [0] * len(syst.T)
     snow  = [0] * len(syst.T)
+    # N = 1
+    # start = 86300
+    # for n in range(N):
+    #     K_MAX = calculate_key_rate(MODEL_KEY_RATE, links, fog, rain, snow, syst,
+    #                                max_workers=24, chunk_size=1,
+    #                                start_chunk=start + n*10, end_chunk=start + (n+1)*10,
+    #                                checkpoint_file="K_MAX_checkpoint.pkl") # method: "plob", "theoretical", "simulation"
+
     K_MAX = calculate_key_rate(MODEL_KEY_RATE, links, fog, rain, snow, syst) # method: "plob", "theoretical", "simulation"
 
     #print(f"K_MAX:{K_MAX}")

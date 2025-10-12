@@ -53,6 +53,7 @@ def plot_solution(solution):
         # --- Case 2: Data is dict {(i,...,t): value} ---
         elif isinstance(data, dict):
             # Extract keys
+            
             keys = list(data.keys())
             if not keys:
                 continue
@@ -564,79 +565,81 @@ def plot_skr_stratotegic_real(n=5, d_min_t=0, d_max_t=8):
 #     plt.title("Secret Key Rate vs Time (Full-day Balloon Trajectory)")
 #     plt.grid(True)
 #     plt.legend()
-#     plt.show()
+#     plt.show()2D
 
 def plot_connectivity_graph(gnodes, hnodes, links):
     """
-    Plot connectivity graph of Ground Stations (GS) and HAPs.
+    Plot connectivity graph of Ground Stations (GS) and HAPs with trajectories
+    using pure Matplotlib (no NetworkX drawing) to ensure proper longitude/latitude ticks.
     
     Parameters:
     -----------
     gnodes : list
-        List of GS objects. Each should have attributes 'lon' and 'lat'.
+        List of GS objects with attributes 'la' (latitude), 'lg' (longitude), and optional 'tag'.
     hnodes : list
-        List of HAP objects. Each should have attributes 'lon' and 'lat'.
-        If HAP has a trajectory over time, use the initial position: lon[0], lat[0].
+        List of HAP objects with attributes 'la', 'lg', and optional 'tag'.
+        If HAP has a trajectory, use full lists for 'la' and 'lg'.
     links : list
-        List of link objects. Each should have attributes 'node1' and 'node2'.
-        node1 and node2 can be objects from gnodes/hnodes.
+        List of link objects with attributes 'n1' and 'n2' (nodes from gnodes/hnodes).
     """
-    G = nx.Graph()
+    plt.figure(figsize=(2, 2))
     
-    # Add GS nodes
+    # --- Plot GS nodes ---
     for gs_node in gnodes:
-        G.add_node(gs_node, pos=(gs_node.la, gs_node.lg), type="GS")
+        plt.scatter(gs_node.lg, gs_node.la, color='skyblue', s=80, zorder=5)
+        # Optional: label the GS
+        if hasattr(gs_node, 'tag'):
+            plt.text(gs_node.lg + 0.02, gs_node.la + 0.02, gs_node.tag, fontsize=9, fontweight='bold')
     
-    # Add HAP nodes (initial position)
+    # --- Plot HAP nodes (initial position) ---
     for hap_node in hnodes:
-        G.add_node(hap_node, pos=(hap_node.la[0], hap_node.lg[0]), type="HAP")
+        plt.scatter(hap_node.lg[0], hap_node.la[0], color='orange', s=30, zorder=5)
+        if hasattr(hap_node, 'tag'):
+            plt.text(hap_node.lg[0] + 0.02, hap_node.la[0] + 0.02, hap_node.tag, fontsize=9, fontweight='bold')
     
-    # Add edges based on links
+    # --- Plot edges without duplicates ---
+    plotted_edges = set()
     for l in links:
-        n1, n2 = l.n1, l.n2
-        if n1 in gnodes + hnodes and n2 in gnodes + hnodes:
-            # classify edge type for plotting
-            if (n1 in gnodes and n2 in gnodes) or (n1 in hnodes and n2 in hnodes):
-                edge_type = "intra"
-            else:
-                edge_type = "HAP-GS"
-            G.add_edge(n1, n2, type=edge_type)
+        # Use frozenset to make the edge unordered (A-B same as B-A)
+        edge_key = frozenset([l.n1, l.n2])
+        if edge_key in plotted_edges:
+            continue  # already plotted
+        plotted_edges.add(edge_key)
     
-    # Extract positions
-    pos = nx.get_node_attributes(G, "pos")
+        # Determine coordinates for nodes
+        x = [l.n1.lg[0] if isinstance(l.n1.lg, list) else l.n1.lg,
+             l.n2.lg[0] if isinstance(l.n2.lg, list) else l.n2.lg]
+        y = [l.n1.la[0] if isinstance(l.n1.la, list) else l.n1.la,
+             l.n2.la[0] if isinstance(l.n2.la, list) else l.n2.la]
+        
+        # Decide line style
+        plt.plot(x, y, color='grey', linestyle='--', alpha=0.7)
     
-    # Separate GS and HAP nodes
-    gs_nodes = [n for n, d in G.nodes(data=True) if d["type"] == "GS"]
-    hap_nodes = [n for n, d in G.nodes(data=True) if d["type"] == "HAP"]
+    # --- Plot HAP trajectories ---
+    for hap_node in hnodes:
+        plt.plot(hap_node.lg, hap_node.la, color='orange', linewidth=1.5, alpha=0.8)
     
-    plt.figure(figsize=(8, 4))
+    # --- Axis labels and limits ---
+    all_lons = [gs.lg for gs in gnodes] + [hap.lg[0] for hap in hnodes]
+    all_lats = [gs.la for gs in gnodes] + [hap.la[0] for hap in hnodes]
+    plt.xlabel("Longitude", fontsize=11)
+    plt.ylabel("Latitude", fontsize=11)
+    plt.xlim(min(all_lons) - 0.1, max(all_lons) + 0.7)
+    plt.ylim(min(all_lats) - 0.1, max(all_lats) + 0.1)
+    plt.xticks(fontsize=10)
+    plt.yticks(fontsize=10)
     
-    # Draw nodes
-    nx.draw_networkx_nodes(G, pos, nodelist=gs_nodes, node_color="skyblue", node_size=600, label="GS")
-    nx.draw_networkx_nodes(G, pos, nodelist=hap_nodes, node_color="orange", node_size=600, label="HAPs")
+    # --- Legend ---
+    custom_handles = [
+        Line2D([], [], marker='o', color='skyblue', linestyle='None', markersize=6, label='GS'),
+        Line2D([], [], marker='o', color='orange', linestyle='None', markersize=6, label='HAP')
+    ]
+    plt.legend(handles=custom_handles, loc='best', frameon=True)
     
-    # Draw edges
-    intra_edges = [(u, v) for u, v, d in G.edges(data=True) if d["type"] == "intra"]
-    hap_edges   = [(u, v) for u, v, d in G.edges(data=True) if d["type"] == "HAP-GS"]
-    
-    nx.draw_networkx_edges(G, pos, edgelist=intra_edges, edge_color="blue", style="solid", alpha=0.5)
-    nx.draw_networkx_edges(G, pos, edgelist=hap_edges, edge_color="orange", style="dashed", alpha=0.7)
-    
-    # Draw labels
-    # Draw labels using 'tag' attribute
-    labels = {}
-    for n, d in G.nodes(data=True):
-        # Use tag if it exists, else fallback to empty string or some identifier
-        labels[n] = getattr(n, "tag", "") if getattr(n, "tag", None) is not None else ""
-    
-    nx.draw_networkx_labels(G, pos, labels=labels, font_size=9, font_weight="bold")
-    
-    plt.title("HAP-QKD Network Connectivity", fontsize=14)
-    plt.xlabel("Longitude")
-    plt.ylabel("Latitude")
-    plt.grid(True)
-    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig("hap_qkd_network.svg", format="svg", dpi=300, bbox_inches="tight")
     plt.show()
+
 
 def animate_hap_trajectories(times, lons_list, lats_list, hap_names):
     """
@@ -655,7 +658,6 @@ def animate_hap_trajectories(times, lons_list, lats_list, hap_names):
     """
     # Build DataFrame
     data = {"time": [], "lat": [], "lon": [], "hap": []}
-    
     for hap_idx, hap_name in enumerate(hap_names):
         for t_idx, t in enumerate(times):
             data["time"].append(t)
@@ -712,41 +714,190 @@ def compute_point(args):
     skr_ps  = -ts.ratesources * ts.sourceeff * math.log2(1 - eta_s)
     return skr_t, skr_s, skr_pt, skr_ps
 
-def plot_skr(dir, n, d_list, h_list, max_workers=20):
+# def plot_skr(dir, n, d_list, h_list, max_workers=24):
+#     """
+#     Parallelized SKR plotter across CPU cores with progress bar.
+#     """
+#     times = range(len(d_list))
+
+#     # Pack args
+#     tasks = [(d, h_list[idx], dir, n) for idx, d in enumerate(d_list)]
+#     skr_theory, skr_sim, skr_plob_theory, skr_plob_sim = [], [], [], []
+
+#     with ProcessPoolExecutor(max_workers=max_workers) as executor:
+#         futures = [executor.submit(compute_point, t) for t in tasks]
+#         for f in tqdm(as_completed(futures), total=len(futures), desc="Computing SKR"):
+#             skr_t, skr_s, skr_pt, skr_ps = f.result()
+#             skr_theory.append(skr_t * 1e-3)
+#             skr_sim.append(skr_s * 1e-3)
+#             skr_plob_theory.append(skr_pt * 1e-3)
+#             skr_plob_sim.append(skr_ps * 1e-3)
+
+#     print("\nAll points computed.")
+
+#     # Plot
+#     plt.figure(figsize=(12,6))
+#     plt.plot(times, skr_theory, label="SKR DW Bound (Theoretical)", color="green")
+#     plt.plot(times, skr_sim, label="SKR DW Bound (Simulation)", color="orange", linestyle="--")
+#     plt.plot(times, skr_plob_theory, label="SKR PLOB Bound (Theoretical)", color="blue", linestyle="-.")
+#     plt.plot(times, skr_plob_sim, label="SKR PLOB Bound (Simulation)", color="red", linestyle=":")
+
+#     plt.xlabel("Time (s)")
+#     plt.ylabel("SKR (kbps)")
+#     plt.grid(True)
+#     plt.legend()
+#     plt.savefig("skr.svg", format="svg", dpi=300, bbox_inches="tight")
+#     plt.show()
+
+# def plot_skr(dir, n, d_list, h_list, start_time=0, end_time=None, 
+#               max_workers=24, result_file="skr_results.pkl"):
+#     """
+#     Parallelized SKR plotter across CPU cores with progress bar.
+#     Supports incremental runs with (start_time, end_time) and persistent results.
+#     """
+#     if end_time is None:
+#         end_time = len(d_list)
+
+#     # Select only the slice for this run
+#     d_list = d_list[start_time:end_time]
+#     h_list = h_list[start_time:end_time]
+#     times = list(range(start_time, end_time))
+
+#     # Pack args
+#     tasks = [(d, h_list[idx], dir, n) for idx, d in enumerate(d_list)]
+#     new_theory, new_sim, new_plob_theory, new_plob_sim = [], [], [], []
+
+#     print(f"Running interval {start_time} → {end_time} ({len(tasks)} points)")
+
+#     # Parallel compute
+#     with ProcessPoolExecutor(max_workers=max_workers) as executor:
+#         futures = [executor.submit(compute_point, t) for t in tasks]
+#         for f in tqdm(as_completed(futures), total=len(futures), desc="Computing SKR"):
+#             skr_t, skr_s, skr_pt, skr_ps = f.result()
+#             new_theory.append(skr_t * 1e-3)
+#             new_sim.append(skr_s * 1e-3)
+#             new_plob_theory.append(skr_pt * 1e-3)
+#             new_plob_sim.append(skr_ps * 1e-3)
+
+#     # print("len(times):", len(times))
+#     # print("len(new_theory):", len(new_theory))
+#     # print("len(new_sim):", len(new_sim))
+#     # print("len(new_plob_theory):", len(new_plob_theory))
+
+#     print("\nInterval computation done. Saving results...")
+
+#     # === Load previous results if exist ===
+#     if os.path.exists(result_file):
+#         with open(result_file, "rb") as f:
+#             data = pickle.load(f)
+#         skr_theory = data["skr_theory"]
+#         skr_sim = data["skr_sim"]
+#         skr_plob_theory = data["skr_plob_theory"]
+#         skr_plob_sim = data["skr_plob_sim"]
+#         old_times = data["times"]
+#     else:
+#         skr_theory, skr_sim, skr_plob_theory, skr_plob_sim, old_times = [], [], [], [], []
+
+#     # === Align results ===
+#     # Ensure we’re extending only if the new times don’t overlap
+#     existing_points = set(old_times)
+#     for i, t in enumerate(times):
+#         if t not in existing_points:
+#             skr_theory.append(new_theory[i])
+#             skr_sim.append(new_sim[i])
+#             skr_plob_theory.append(new_plob_theory[i])
+#             skr_plob_sim.append(new_plob_sim[i])
+#             old_times.append(t)
+
+#     all_times = old_times
+
+#     # === Save updated results ===
+#     with open(result_file, "wb") as f:
+#         pickle.dump({
+#             "skr_theory": skr_theory,
+#             "skr_sim": skr_sim,
+#             "skr_plob_theory": skr_plob_theory,
+#             "skr_plob_sim": skr_plob_sim,
+#             "times": all_times
+#         }, f)
+
+#     print(f"Results saved to {result_file} ({len(all_times)} total points).")
+
+#     # === Plot cumulative results ===
+#     plt.figure(figsize=(12,6))
+#     plt.plot(all_times, skr_theory, label="SKR DW Bound (Theoretical)", color="green")
+#     plt.plot(all_times, skr_sim, label="SKR DW Bound (Simulation)", color="orange", linestyle="--")
+#     plt.plot(all_times, skr_plob_theory, label="SKR PLOB Bound (Theoretical)", color="blue", linestyle="-.")
+#     plt.plot(all_times, skr_plob_sim, label="SKR PLOB Bound (Simulation)", color="red", linestyle=":")
+
+#     plt.xlabel("Time (s)")
+#     plt.ylabel("SKR (kbps)")
+#     plt.grid(True)
+#     plt.legend()
+#     plt.savefig("skr.svg", format="svg", dpi=300, bbox_inches="tight")
+#     plt.show()
+
+def plot_skr(result_file="skr_results.pkl", outlier_factor=3.0):
     """
-    Parallelized SKR plotter across CPU cores with progress bar.
+    Load and plot existing SKR data from result_file.
+    Automatically filters outliers where a point jumps > outlier_factor × previous point.
     """
-    times = range(len(d_list))
 
-    # Pack args
-    tasks = [(d, h_list[idx], dir, n) for idx, d in enumerate(d_list)]
+    if not os.path.exists(result_file):
+        print(f"❌ No result file found at: {result_file}")
+        return
 
-    skr_theory, skr_sim, skr_plob_theory, skr_plob_sim = [], [], [], []
+    # === Load results ===
+    with open(result_file, "rb") as f:
+        data = pickle.load(f)
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Wrap with tqdm for progress tracking
-        for skr_t, skr_s, skr_pt, skr_ps in tqdm(
-            executor.map(compute_point, tasks),
-            total=len(tasks),
-            desc="Computing SKR"
-        ):
-            skr_theory.append(skr_t)
-            skr_sim.append(skr_s)
-            skr_plob_theory.append(skr_pt)
-            skr_plob_sim.append(skr_ps)
+    skr_theory = data.get("skr_theory", [])
+    skr_sim = data.get("skr_sim", [])
+    skr_plob_theory = data.get("skr_plob_theory", [])
+    skr_plob_sim = data.get("skr_plob_sim", [])
+    times = data.get("times", [])
 
-    print("\nAll points computed.")
+    if not times:
+        print("⚠️ No data found in the file.")
+        return
 
-    # Plot
-    plt.figure(figsize=(12,6))
-    plt.plot(times, skr_theory, label="Theoretical SKR", color="green")
-    plt.plot(times, skr_sim, label="Simulated SKR", color="orange", linestyle="--")
-    plt.plot(times, skr_plob_theory, label="Theoretical SKR Upper Bound", color="blue", linestyle="-.")
-    plt.plot(times, skr_plob_sim, label="Simulated SKR Upper Bound", color="red", linestyle=":")
+    print(f"Loaded {len(times)} data points from {result_file}")
 
-    plt.xlabel("Time (s)")
-    plt.ylabel("SKR (bps)")
-    plt.title("Secret Key Rate vs Time (Full-day Balloon Trajectory)")
+    # === Define outlier filtering helper ===
+    def remove_outliers(values):
+        if not values:
+            return values
+        cleaned = [values[0]]
+        for i in range(1, len(values)):
+            if values[i] > outlier_factor * cleaned[-1]:
+                # Outlier detected – replace with previous value
+                cleaned.append(cleaned[-1])
+            else:
+                cleaned.append(values[i])
+        return cleaned
+
+    # === Apply outlier removal ===
+    skr_theory = remove_outliers(skr_theory)
+    skr_sim = remove_outliers(skr_sim)
+    skr_plob_theory = remove_outliers(skr_plob_theory)
+    skr_plob_sim = remove_outliers(skr_plob_sim)
+
+    # === Convert time scale to hours ===
+    times_hours = [t / 3600.0 for t in times]
+
+    # === Plot cleaned results ===
+    plt.figure(figsize=(8,3))
+    plt.plot(times_hours, skr_sim, label="SKR DW Bound (Simulation)", color="orange", linestyle="--", marker="o", markersize=8, markevery=8640)
+    plt.plot(times_hours, skr_plob_sim, label="SKR PLOB Bound (Simulation)", color="red", linestyle=":", marker="x", markersize=8, markevery=8640)
+    plt.plot(times_hours, skr_theory, label="SKR DW Bound (Theoretical)", color="green", marker="s", markersize=8, markevery=8640)
+    plt.plot(times_hours, skr_plob_theory, label="SKR PLOB Bound (Theoretical)", color="blue", linestyle="-.", marker="^", markersize=8, markevery=8640)
+
+    plt.xlabel("Time (hours)")
+    plt.ylabel("Maximum SKR (kbps)")
     plt.grid(True)
     plt.legend()
+    plt.tight_layout()
+    plt.savefig("skr_cleaned.svg", format="svg", dpi=300, bbox_inches="tight")
     plt.show()
+
+    print("✅ Plot complete (outliers replaced if detected).")

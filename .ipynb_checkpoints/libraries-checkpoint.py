@@ -33,7 +33,8 @@ from   scipy.interpolate     import interp1d, CubicSpline
 from   pyproj                import Transformer
 from   mpl_toolkits.mplot3d  import Axes3D
 from   matplotlib.animation  import FuncAnimation
-from   concurrent.futures    import ProcessPoolExecutor
+from   matplotlib.lines      import Line2D
+from   concurrent.futures    import ProcessPoolExecutor, as_completed
 from   tqdm                  import tqdm
 
 import warnings
@@ -47,5 +48,6 @@ from data   import *
 from plot   import *
 from helper import *
 from setup  import *
-from problems.offline_wind import *
-from problems.planning     import *
+from problems.offline  import *
+from problems.online   import *
+from problems.planning import *

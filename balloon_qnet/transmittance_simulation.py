@@ -436,5 +436,5 @@ def compute_skr(efficiency, ratesources=80e6, sourceeff=0.01, QBER=0.04):
     if efficiency <= 0:
         return 0.0
     rate = ratesources * sourceeff * efficiency
-    skr = rate * (1 - 2 * h(QBER))
+    skr  = rate * (1 - 2 * h(QBER))
     return skr

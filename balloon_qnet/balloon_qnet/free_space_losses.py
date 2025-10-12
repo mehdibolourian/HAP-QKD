@@ -1583,8 +1583,8 @@ class UplinkChannel(DownlinkChannel):
         # Check if we are below the Rayleigh criterion
         bj_wvln = np.sqrt(bj2)/(2*np.pi)
         bj_wlvn_max = np.max(bj_wvln)
-        if bj_wlvn_max > 0.05:
-            print("Problem Rayleigh: AO level : {} , check: {}".format(self.n_max,bj_wlvn_max))
+        # if bj_wlvn_max > 0.05:
+        #     print("Problem Rayleigh: AO level : {} , check: {}".format(self.n_max,bj_wlvn_max))
             # raise ValueError(f"The maximum Zernike coefficient std in wavelenghts is {bj_wlvn_max}. The SMF PDF is accurate below the Rayleigh criterion (0.05). You may need to use higher order of correction or smaller integration time of the AO system.")
         
         # Compute anisoplanatic error
@@ -1638,8 +1638,8 @@ class UplinkChannel(DownlinkChannel):
         # Check if we are below the Rayleigh criterion
         bj_wvln = np.sqrt(bj2)/(2*np.pi)
         bj_wlvn_max = np.max(bj_wvln)
-        if bj_wlvn_max > 0.05:
-            print("Problem Rayleigh: AO level : {} , check: {}".format(self.n_max,bj_wlvn_max))
+        # if bj_wlvn_max > 0.05:
+        #     print("Problem Rayleigh: AO level : {} , check: {}".format(self.n_max,bj_wlvn_max))
             # raise ValueError(f"The maximum Zernike coefficient std in wavelenghts is {bj_wlvn_max}. The SMF PDF is accurate below the Rayleigh criterion (0.05). You may need to use higher order of correction or smaller integration time of the AO system.")
 
         # Compute anisoplanatic error

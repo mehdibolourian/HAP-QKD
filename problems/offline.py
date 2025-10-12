@@ -1,6 +1,6 @@
 from libraries import *
 
-def offline_wind(gss, haps, links, demands):
+def offline(gss, haps, links, demands):
     # Create Optimization Model
     m = gp.Model("hap-qkd")
     

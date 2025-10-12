@@ -411,13 +411,179 @@ def _compute_key_point(task):
 
     return idx_l, t, None
 
-def calculate_key_rate(method, links, fog, rain, snow, syst, max_workers=20):
-    NUM_LINKS = len(links)
-    K_MAX = [None] * NUM_LINKS
+# def calculate_key_rate(method, links, fog, rain, snow, syst, max_workers=24):
+#     NUM_LINKS = len(links)
+#     K_MAX = [None] * NUM_LINKS
 
-    # Build tasks
-    tasks = []
-    los_store = {}   # store d_los and H_h for link 0
+#     # Build tasks
+#     tasks = []
+#     los_store = {}   # store d_los and H_h for link 0
+#     for idx_l, l in enumerate(links):
+#         if isinstance(l.n1, hap) and not isinstance(l.n2, hap):
+#             hap_node, gs_node = l.n1, l.n2
+#         elif isinstance(l.n2, hap) and not isinstance(l.n1, hap):
+#             hap_node, gs_node = l.n2, l.n1
+#         else:
+#             continue
+
+#         # Precompute geometry for plotting (first link only)
+#         if idx_l == 0:
+#             la_rad_h = [math.radians(hap_node.la[t]) for t in syst.T]
+#             lg_rad_h = [math.radians(hap_node.lg[t]) for t in syst.T]
+#             H_h      = [hap_node.H[t] for t in syst.T]
+
+#             la_rad_g = math.radians(gs_node.la)
+#             lg_rad_g = math.radians(gs_node.lg)
+#             x_g = R * math.cos(la_rad_g) * math.cos(lg_rad_g)
+#             y_g = R * math.cos(la_rad_g) * math.sin(lg_rad_g)
+
+#             x_h = [R * math.cos(la_rad_h[t]) * math.cos(lg_rad_h[t]) for t in syst.T]
+#             y_h = [R * math.cos(la_rad_h[t]) * math.sin(lg_rad_h[t]) for t in syst.T]
+#             d_los_hor = [math.sqrt((x_h[t] - x_g) ** 2 + (y_h[t] - y_g) ** 2) for t in syst.T]
+#             alpha = [math.atan(H_h[t] / d_los_hor[t]) if d_los_hor[t] > 0 else math.pi / 2 for t in syst.T]
+#             d_los = [H_h[t] / math.sin(alpha[t]) for t in syst.T]
+
+#             los_store["d_list"] = d_los
+#             los_store["h_list"] = H_h
+
+#         # Tasks for each time slot
+#         for t in syst.T:
+#             tasks.append((idx_l, t, l, syst, method, fog, rain, snow))
+
+#     # Parallel execution
+#     with ProcessPoolExecutor(max_workers=max_workers) as executor:
+#         for idx_l, t, k_val in tqdm(executor.map(_compute_key_point, tasks, chunksize=10),
+#                                     total=len(tasks)):
+#             if k_val is None:
+#                 continue
+#             if K_MAX[idx_l] is None:
+#                 K_MAX[idx_l] = [None] * len(syst.T)
+#             K_MAX[idx_l][t] = k_val
+
+#     # # Do the plot AFTER everything is finished
+#     # if 0 in range(NUM_LINKS) and "d_list" in los_store:
+#     #     plot_skr("downlink", 6, los_store["d_list"], los_store["h_list"])
+
+#     return K_MAX
+
+# def calculate_key_rate(method, links, fog, rain, snow, syst, 
+#                        max_workers=24, chunk_size=1,
+#                        start_chunk=0, end_chunk=None,
+#                        checkpoint_file="K_MAX_checkpoint.pkl"):
+#     """
+#     Calculate K_MAX in chunks with checkpointing.
+
+#     method: channel/key-rate model
+#     links, fog, rain, snow, syst: system data
+#     max_workers: parallel workers
+#     chunk_size: number of time steps per chunk
+#     start_chunk, end_chunk: define chunk range to compute (useful for restart)
+#     checkpoint_file: file to store intermediate results
+#     """
+
+#     NUM_LINKS = len(links)
+#     num_time_slots = len(syst.T)
+#     chunks = [(i, min(i+chunk_size, num_time_slots)) 
+#               for i in range(0, num_time_slots, chunk_size)]
+
+#     if end_chunk is None:
+#         end_chunk = len(chunks)
+
+#     # Initialize K_MAX (load checkpoint if exists)
+#     if os.path.exists(checkpoint_file):
+#         with open(checkpoint_file, "rb") as f:
+#             K_MAX = pickle.load(f)
+#         print(f"[INFO] Loaded checkpoint from {checkpoint_file}")
+#     else:
+#         K_MAX = [None] * NUM_LINKS
+
+#     los_store = {}
+
+#     # Process chunks
+#     for chunk_idx, (start_t, end_t) in enumerate(chunks[start_chunk:end_chunk], start=start_chunk):
+#         #print(f"\n[INFO] Processing chunk {chunk_idx}: time steps {start_t} → {end_t-1}")
+
+#         tasks = []
+#         for idx_l, l in enumerate(links):
+#             if isinstance(l.n1, hap) and not isinstance(l.n2, hap):
+#                 hap_node, gs_node = l.n1, l.n2
+#             elif isinstance(l.n2, hap) and not isinstance(l.n1, hap):
+#                 hap_node, gs_node = l.n2, l.n1
+#             else:
+#                 continue
+
+#             # Store geometry for plotting (first link only, once)
+#             if idx_l == 0 and not los_store:
+#                 la_rad_h = [math.radians(hap_node.la[t]) for t in syst.T]
+#                 lg_rad_h = [math.radians(hap_node.lg[t]) for t in syst.T]
+#                 H_h      = [hap_node.H[t] for t in syst.T]
+
+#                 la_rad_g = math.radians(gs_node.la)
+#                 lg_rad_g = math.radians(gs_node.lg)
+#                 x_g = R * math.cos(la_rad_g) * math.cos(lg_rad_g)
+#                 y_g = R * math.cos(la_rad_g) * math.sin(lg_rad_g)
+
+#                 x_h = [R * math.cos(la_rad_h[t]) * math.cos(lg_rad_h[t]) for t in syst.T]
+#                 y_h = [R * math.cos(la_rad_h[t]) * math.sin(lg_rad_h[t]) for t in syst.T]
+#                 d_los_hor = [math.sqrt((x_h[t] - x_g) ** 2 + (y_h[t] - y_g) ** 2) for t in syst.T]
+#                 alpha = [math.atan(H_h[t] / d_los_hor[t]) if d_los_hor[t] > 0 else math.pi / 2 for t in syst.T]
+#                 d_los = [H_h[t] / math.sin(alpha[t]) for t in syst.T]
+
+#                 los_store["d_list"] = d_los
+#                 los_store["h_list"] = H_h
+
+#             # Tasks only for this chunk
+#             for t in range(start_t, end_t):
+#                 tasks.append((idx_l, t, l, syst, method, fog, rain, snow))
+
+#         # Run parallel
+#         with ProcessPoolExecutor(max_workers=max_workers) as executor:
+#             for idx_l, t, k_val in tqdm(executor.map(_compute_key_point, tasks, chunksize=10),
+#                                         total=len(tasks)):
+#                 if k_val is None:
+#                     continue
+#                 if K_MAX[idx_l] is None:
+#                     K_MAX[idx_l] = [None] * num_time_slots
+#                 K_MAX[idx_l][t] = k_val
+
+#         # Save checkpoint after each chunk
+#         with open(checkpoint_file, "wb") as f:
+#             pickle.dump(K_MAX, f)
+#         print(f"[INFO] Saved checkpoint after chunk {chunk_idx}")
+
+#     # # Do the plot AFTER everything is finished
+#     # if 0 in range(NUM_LINKS) and "d_list" in los_store:
+#     #     plot_skr("downlink", 6, los_store["d_list"], los_store["h_list"], start_chunk, end_chunk)
+
+#     return K_MAX
+
+def calculate_key_rate(method, links, fog, rain, snow, syst,
+                       start_time=0, end_time=None,
+                       max_workers=24,
+                       result_file="K_MAX_checkpoint.pkl"):
+    """
+    Compute and store K_MAX values between given time steps [start_time, end_time).
+    Parallelized across links and times.
+    Supports incremental runs by saving/loading results in result_file.
+    """
+
+    num_links = len(links)
+    num_time_slots = len(syst.T)
+    if end_time is None:
+        end_time = num_time_slots
+
+    print(f"⏱️ Calculating K_MAX from t={start_time} to t={end_time-1} ({end_time - start_time} time steps)")
+    
+    # === Load checkpoint if exists ===
+    if os.path.exists(result_file):
+        with open(result_file, "rb") as f:
+            K_MAX = pickle.load(f)
+        print(f"[INFO] Loaded checkpoint from {result_file}")
+    else:
+        K_MAX = [None] * num_links
+
+    # === Prepare geometry info once (for first link only) ===
+    los_store = {}
     for idx_l, l in enumerate(links):
         if isinstance(l.n1, hap) and not isinstance(l.n2, hap):
             hap_node, gs_node = l.n1, l.n2
@@ -426,45 +592,112 @@ def calculate_key_rate(method, links, fog, rain, snow, syst, max_workers=20):
         else:
             continue
 
-        # Precompute geometry for plotting (first link only)
-        if idx_l == 0:
-            la_rad_h = [math.radians(hap_node.la[t]) for t in syst.T]
-            lg_rad_h = [math.radians(hap_node.lg[t]) for t in syst.T]
-            H_h      = [hap_node.H[t] for t in syst.T]
+        la_rad_h = [math.radians(hap_node.la[t]) for t in syst.T]
+        lg_rad_h = [math.radians(hap_node.lg[t]) for t in syst.T]
+        H_h      = [hap_node.H[t] for t in syst.T]
 
-            la_rad_g = math.radians(gs_node.la)
-            lg_rad_g = math.radians(gs_node.lg)
-            x_g = R * math.cos(la_rad_g) * math.cos(lg_rad_g)
-            y_g = R * math.cos(la_rad_g) * math.sin(lg_rad_g)
+        la_rad_g = math.radians(gs_node.la)
+        lg_rad_g = math.radians(gs_node.lg)
+        x_g = R * math.cos(la_rad_g) * math.cos(lg_rad_g)
+        y_g = R * math.cos(la_rad_g) * math.sin(lg_rad_g)
 
-            x_h = [R * math.cos(la_rad_h[t]) * math.cos(lg_rad_h[t]) for t in syst.T]
-            y_h = [R * math.cos(la_rad_h[t]) * math.sin(lg_rad_h[t]) for t in syst.T]
-            d_los_hor = [math.sqrt((x_h[t] - x_g) ** 2 + (y_h[t] - y_g) ** 2) for t in syst.T]
-            alpha = [math.atan(H_h[t] / d_los_hor[t]) if d_los_hor[t] > 0 else math.pi / 2 for t in syst.T]
-            d_los = [H_h[t] / math.sin(alpha[t]) for t in syst.T]
+        x_h = [R * math.cos(la_rad_h[t]) * math.cos(lg_rad_h[t]) for t in syst.T]
+        y_h = [R * math.cos(la_rad_h[t]) * math.sin(lg_rad_h[t]) for t in syst.T]
+        d_los_hor = [math.sqrt((x_h[t] - x_g)**2 + (y_h[t] - y_g)**2) for t in syst.T]
+        alpha = [math.atan(H_h[t] / d_los_hor[t]) if d_los_hor[t] > 0 else math.pi / 2 for t in syst.T]
+        d_los = [H_h[t] / math.sin(alpha[t]) for t in syst.T]
 
-            los_store["d_list"] = d_los
-            los_store["h_list"] = H_h
+        los_store["d_list"] = d_los
+        los_store["h_list"] = H_h
+        break  # Only need one geometry reference
 
-        # Tasks for each time slot
-        for t in syst.T:
+    # === Prepare tasks ===
+    tasks = []
+    for idx_l, l in enumerate(links):
+        for t in range(start_time, end_time):
             tasks.append((idx_l, t, l, syst, method, fog, rain, snow))
 
-    # Parallel execution
+    print(f"🧩 Total tasks: {len(tasks)} ({len(links)} links × {end_time - start_time} timesteps)")
+
+    # === Parallel execution ===
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for idx_l, t, k_val in tqdm(executor.map(_compute_key_point, tasks, chunksize=10),
-                                    total=len(tasks)):
+                                    total=len(tasks),
+                                    desc="Computing key rates"):
             if k_val is None:
                 continue
             if K_MAX[idx_l] is None:
-                K_MAX[idx_l] = [None] * len(syst.T)
+                K_MAX[idx_l] = [None] * num_time_slots
             K_MAX[idx_l][t] = k_val
 
-    # Do the plot AFTER everything is finished
-    if 0 in range(NUM_LINKS) and "d_list" in los_store:
-        plot_skr("downlink", 6, los_store["d_list"], los_store["h_list"])
+    # === Save checkpoint ===
+    with open(result_file, "wb") as f:
+        pickle.dump(K_MAX, f)
+    print(f"[INFO] Saved updated results to {result_file}")
 
-    return K_MAX
+    print(f"✅ Computation complete for interval {start_time}–{end_time-1}")
+
+    return K_MAX, los_store
+
+
+
+# def calculate_key_rate(method, links, fog, rain, snow, syst, 
+#                        max_workers, chunk_size,
+#                        start_chunk, end_chunk,
+#                        checkpoint_file):
+#     """
+#     Calculate K_MAX in chunks with checkpointing.
+
+#     method: channel/key-rate model
+#     links, fog, rain, snow, syst: system data
+#     max_workers: parallel workers
+#     chunk_size: number of time steps per chunk
+#     start_chunk, end_chunk: define chunk range to compute (useful for restart)
+#     checkpoint_file: file to store intermediate results
+#     """
+
+#     NUM_LINKS = len(links)
+#     num_time_slots = len(syst.T)
+
+#     if end_chunk is None:
+#         end_chunk = len(syst.T)
+
+#     los_store = {}
+
+#     for idx_l, l in enumerate(links):
+#         if isinstance(l.n1, hap) and not isinstance(l.n2, hap):
+#             hap_node, gs_node = l.n1, l.n2
+#         elif isinstance(l.n2, hap) and not isinstance(l.n1, hap):
+#             hap_node, gs_node = l.n2, l.n1
+#         else:
+#             continue
+
+#         # Store geometry for plotting (first link only, once)
+#         if idx_l == 0 and not los_store:
+#             la_rad_h = [math.radians(hap_node.la[t]) for t in range(end_chunk)]
+#             lg_rad_h = [math.radians(hap_node.lg[t]) for t in range(end_chunk)]
+#             H_h      = [hap_node.H[t] for t in range(end_chunk)]
+
+#             la_rad_g = math.radians(gs_node.la)
+#             lg_rad_g = math.radians(gs_node.lg)
+#             x_g = R * math.cos(la_rad_g) * math.cos(lg_rad_g)
+#             y_g = R * math.cos(la_rad_g) * math.sin(lg_rad_g)
+
+#             x_h = [R * math.cos(la_rad_h[t]) * math.cos(lg_rad_h[t]) for t in range(end_chunk)]
+#             y_h = [R * math.cos(la_rad_h[t]) * math.sin(lg_rad_h[t]) for t in range(end_chunk)]
+#             d_los_hor = [math.sqrt((x_h[t] - x_g) ** 2 + (y_h[t] - y_g) ** 2) for t in range(end_chunk)]
+#             alpha = [math.atan(H_h[t] / d_los_hor[t]) if d_los_hor[t] > 0 else math.pi / 2 for t in range(end_chunk)]
+#             d_los = [H_h[t] / math.sin(alpha[t]) for t in range(end_chunk)]
+
+#             los_store["d_list"] = d_los
+#             los_store["h_list"] = H_h
+
+#     # Do the plot AFTER everything is finished
+#     if 0 in range(NUM_LINKS) and "d_list" in los_store:
+#         #plot_skr("downlink", 6, los_store["d_list"], los_store["h_list"], start_chunk, end_chunk)
+#         plot_skr()
+
+#     return 0
 
 
 #######################################
