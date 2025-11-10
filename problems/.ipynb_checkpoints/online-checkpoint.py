@@ -1,12 +1,14 @@
 from libraries import *
 
-def online(history, gss, haps, links, demands, t, delta):
+def online(history, gss, haps, links, demand, t, delta, state):
     # Create Optimization Model
     m = gp.Model("hap-qkd")
     
     ## Decision Variables
     # Dictionaries of decision variables instead of MVar arrays
     r_1, r_2, r_h, a, z = {}, {}, {}, {}, {}
+
+    demands = [demand]
 
     for idx_l, l in enumerate(links):
         for idx_d, d in enumerate(demands):
@@ -25,21 +27,6 @@ def online(history, gss, haps, links, demands, t, delta):
                            )
                        ) * syst.THETA, index=0, priority=2, weight=1.0, abstol=1e-9, reltol=1e-9, name="Primary")
 
-    # m.setObjectiveN(sum(sum(sum(r_1[idx_l, idx_d, t]
-    #                             for idx_l, l in enumerate(links)
-    #                            )
-    #                         for idx_d, d in enumerate(demands)
-    #                        )
-    #                     for t in syst.T
-    #                    ) * syst.THETA, index=1, priority=1, weight=1.0, abstol=1e-9, reltol=1e-9, name="Secondary")
-
-    # # Secondary objective: maximize a
-    # m.setObjectiveN(sum(sum(a[idx_l, t]
-    #                        for idx_l, l in enumerate(links)
-    #                       )
-    #                    for t in syst.T
-    #                   ), index=1, priority=1, weight=1.0, abstol=1e-6, reltol=1e-6, name="Secondary")
-
     m.setParam("MIPGap", 1e-9)          # force very tight gap
     m.setParam("MIPGapAbs", 1e-9)
     m.setParam("FeasibilityTol", 1e-9)
@@ -54,7 +41,6 @@ def online(history, gss, haps, links, demands, t, delta):
             r_h[idx_d] <= r_1[idx_l, idx_d] + r_2[idx_l, idx_d] + d.K_REQ[t] * KEY_RATE_SCALE * (1 - z[idx_l, idx_d])
             for idx_l, l in enumerate(links)
             for idx_d, d in enumerate(demands)
-            for t        in syst.T
         ), name="demand_link_coordination"
     )
 
@@ -79,9 +65,9 @@ def online(history, gss, haps, links, demands, t, delta):
     # Max Key Rate
     m.addConstrs(
         (
-            sum(r_1[idx_d]
-                for idx_d, d in enumerate(demands)
-               ) <= l.K_MAX * KEY_RATE_SCALE
+            gp.quicksum(r_1[idx_d]
+                        for idx_d, d in enumerate(demands)
+                       ) <= l.K_MAX * KEY_RATE_SCALE
             for idx_l, l in enumerate(links)
         ), name="max_key_rate"
     )
@@ -89,41 +75,41 @@ def online(history, gss, haps, links, demands, t, delta):
     # Flow conservation
     m.addConstrs(
         (
-            sum(z[idx_l, idx_d]
-                for idx_l, l in enumerate(links)
-                if isinstance(l.n1, gs)
-                if gss.index(l.n1) == gss.index(d.n1)
-               ) - sum(z[idx_l, idx_d]
-                       for idx_l, l in enumerate(links)
-                       if isinstance(l.n2, gs)
-                       if gss.index(l.n2) == gss.index(d.n1)
-                      ) == 1
+            gp.quicksum(z[idx_l, idx_d]
+                        for idx_l, l in enumerate(links)
+                        if isinstance(l.n1, gs)
+                        if gss.index(l.n1) == gss.index(d.n1)
+                       ) - gp.quicksum(z[idx_l, idx_d]
+                                       for idx_l, l in enumerate(links)
+                                       if isinstance(l.n2, gs)
+                                       if gss.index(l.n2) == gss.index(d.n1)
+                                      ) == 1
             for idx_d, d in enumerate(demands)
         ), name="flow_conservation_1"
     )
     m.addConstrs(
         (
-            sum(z[idx_l, idx_d]
-                for idx_l, l in enumerate(links)
-                if isinstance(l.n2, gs)
-                if gss.index(l.n2) == gss.index(d.n2)
-               ) - sum(z[idx_l, idx_d]
-                       for idx_l, l in enumerate(links)
-                       if isinstance(l.n1, gs)
-                       if gss.index(l.n1) == gss.index(d.n2)
-                      ) == 1
+            gp.quicksum(z[idx_l, idx_d]
+                        for idx_l, l in enumerate(links)
+                        if isinstance(l.n2, gs)
+                        if gss.index(l.n2) == gss.index(d.n2)
+                       ) - gp.quicksum(z[idx_l, idx_d]
+                                       for idx_l, l in enumerate(links)
+                                       if isinstance(l.n1, gs)
+                                       if gss.index(l.n1) == gss.index(d.n2)
+                                      ) == 1
             for idx_d, d in enumerate(demands)
         ), name="flow_conservation_2"
     )
     m.addConstrs(
         (
-            sum(z[idx_l, idx_d]
-                for idx_l, l in enumerate(links)
-                if  l.n1 == n
-               ) - sum(z[idx_l, idx_d]
-                       for idx_l, l in enumerate(links)
-                       if  l.n2 == n
-                      ) == 0
+            gp.quicksum(z[idx_l, idx_d]
+                        for idx_l, l in enumerate(links)
+                        if  l.n1 == n
+                       ) - gp.quicksum(z[idx_l, idx_d]
+                                       for idx_l, l in enumerate(links)
+                                       if  l.n2 == n
+                                      ) == 0
             for idx_d, d in enumerate(demands)
             for n in gss + haps
             if  n != d.n1 and n != d.n2
@@ -142,32 +128,32 @@ def online(history, gss, haps, links, demands, t, delta):
     # Maximum Tx/Rx Connection
     m.addConstrs(
         (
-            sum(z[idx_l, idx_d]
-                for idx_l, l in enumerate(links)
-                if  l.n1 == n
-               ) <= n.N_TX
+            gp.quicksum(z[idx_l, idx_d]
+                        for idx_l, l in enumerate(links)
+                        for idx_d, d in enumerate(demands)
+                        if  l.n1 == n
+                       ) <= n.N_TX
             for idx_n, n in enumerate(gss + haps)
-            for idx_d, d in enumerate(demands)
         ), name="max_tx_connections"
     )
     
     m.addConstrs(
         (
-            sum(z[idx_l, idx_d]
-                for idx_l, l in enumerate(links)
-                if l.n2 == n
-               ) <= n.N_RX
+            gp.quicksum(z[idx_l, idx_d]
+                        for idx_l, l in enumerate(links)
+                        for idx_d, d in enumerate(demands)
+                        if l.n2 == n
+                       ) <= n.N_RX
             for idx_n, n in enumerate(gss + haps)
-            for idx_d, d in enumerate(demands)
         ), name="max_rx_connections"
     )
     
     # QKP on HAPs and GSs
     m.addConstrs(
         (
-            a[idx_l] >= delta * sum(r_2[idx_l, idx_d]
-                                    for idx_d, d in enumerate(demands)
-                                   ) * STORAGE_SCALE
+            a[idx_l] >= delta * gp.quicksum(r_2[idx_l, idx_d]
+                                            for idx_d, d in enumerate(demands)
+                                           ) * STORAGE_SCALE
             for idx_l, l in enumerate(links)
             for t        in syst.T
         ), name="qkp_min_capacity"
@@ -175,9 +161,9 @@ def online(history, gss, haps, links, demands, t, delta):
     
     m.addConstrs(
         (
-            a[idx_l] == syst.THETA * (l.K_MAX[t] * KEY_RATE_SCALE - sum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d]
-                                                                        for idx_d, d in enumerate(demands)
-                                                                       )
+            a[idx_l] == syst.THETA * (l.K_MAX[t] * KEY_RATE_SCALE - gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d]
+                                                                                for idx_d, d in enumerate(demands)
+                                                                               )
                                         ) * STORAGE_SCALE
             for idx_l, l in enumerate(links)
             for t        in syst.T

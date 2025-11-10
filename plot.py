@@ -582,7 +582,7 @@ def plot_connectivity_graph(gnodes, hnodes, links):
     links : list
         List of link objects with attributes 'n1' and 'n2' (nodes from gnodes/hnodes).
     """
-    plt.figure(figsize=(2, 2))
+    plt.figure(figsize=(6, 4))
     
     # --- Plot GS nodes ---
     for gs_node in gnodes:

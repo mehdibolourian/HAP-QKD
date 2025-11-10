@@ -31,10 +31,15 @@ class link(): ## HAP-Ground Station Link
         self.n2    = n2    # link's destination
         self.V     = V     # Visibility in km (For each time step)
         self.W     = W     # Weather condition (For each time step) (fog, rain, snow)
-        self.K_MAX = K_MAX # Max link capacities at each time slot        
+        self.K_MAX = K_MAX # Max link capacities at each time slot
         
 class system(): ## Other System-Wide Parameters
     def __init__(self, T, THETA, G):
         self.T     = T     # Set of time slots
         self.THETA = THETA # Duration of a time slot
         self.G     = G     # Connectivity matrix
+
+class state(): ## Network state a time step
+    def __init__(self, n1, n2, V, W, K_MAX):
+        self.demands  = demands  # The set of existing demands (That are not expired yet)
+        self.solution = solution # Existing routing / Link selection

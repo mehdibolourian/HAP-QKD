@@ -3,16 +3,16 @@ from libraries import *
 SYNTH_STRATO    = 1    ## 0: Wind, 1: Stratotegic Data
 
 COORDINATE_SCALE = 1
-KEY_RATE_SCALE   = 1
-NUM_TIME_SLOTS   = 86400 if SYNTH_STRATO else 4
+KEY_RATE_SCALE   = 1e-2
+NUM_TIME_SLOTS   = 24 if SYNTH_STRATO else 4
 STORAGE_SCALE    = 1
 
 MODEL_KEY_RATE   = "theoretical" # "plob", "theoretical", "simulation"
 
-## T     --> 12 subcarriers with 15 kHz spacing for 1 ms interval
-## THETA --> 1 sec.
+## T     --> Set of time steps
+## THETA --> 60 sec.
 ## G     --> 2 GSs and 2 HAPs with full connectivity
-syst = system(range(NUM_TIME_SLOTS), 1, np.array([[1, 1]]))
+syst = system(range(NUM_TIME_SLOTS), 3600, np.array([[1, 1]]))
 
 level     = "50"  # hPa level (~20 km altitude)
 file_name = f"era5_{level}hpa_hourly.nc"
@@ -94,10 +94,10 @@ def init_setup_real():
     gnodes.append(gs(279.9674, 48.1512, 1, 1, 1e9, "Kirkland Lake"))   # KirklandLake GS - ~140 km southeast of Timmins
     
     # HAPs at 15 km altitude above Padua and Florence
-    hnodes.append(hap([279]*len(syst.T), [49]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP1"))  # Stratotegic coordinates
-    hnodes.append(hap([277.85]*len(syst.T), [49.34]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP2"))  # Moonbeam town center
+    hnodes.append(hap([279]*len(syst.T), [49]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP_0"))  # Stratotegic coordinates
+    hnodes.append(hap([277.85]*len(syst.T), [49.34]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP_1"))  # Moonbeam town center
     # HAP3 between Timmins and KirklandLake
-    hnodes.append(hap([279.31845]*len(syst.T), [48.3135]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP3"))
+    hnodes.append(hap([279.31845]*len(syst.T), [48.3135]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, "HAP_2"))
     
     # Update coordinates depending on model choice
     if SYNTH_STRATO == 1:
@@ -134,7 +134,7 @@ def init_setup_real():
     #                                start_chunk=start + n*10, end_chunk=start + (n+1)*10,
     #                                checkpoint_file="K_MAX_checkpoint.pkl") # method: "plob", "theoretical", "simulation"
 
-    K_MAX = calculate_key_rate(MODEL_KEY_RATE, links, fog, rain, snow, syst) # method: "plob", "theoretical", "simulation"
+    K_MAX, _ = calculate_key_rate(MODEL_KEY_RATE, links, fog, rain, snow, syst) # method: "plob", "theoretical", "simulation"
 
     #print(f"K_MAX:{K_MAX}")
 
@@ -156,15 +156,44 @@ def init_setup_real():
     #t, demand_dict, df = generate_keyrate_demands(hours=1, step_min=1/60)
 
     # Pick a profile, e.g. "enterprise"
-    k_req_vals = [0.02] * len(syst.T) # 0.02 bits/sec
+    # k_req_vals = [150] * len(syst.T) # 25600 bits/sec
+    
+    # # # Use in your demand object
+    # demands.append(
+    #     demand(
+    #         k_req_vals,
+    #         gnodes[0], #gnodes[2],
+    #         gnodes[1]  #gnodes[3]
+    #     )
+    # )
+    # demands.append(
+    #     demand(
+    #         k_req_vals,
+    #         gnodes[2], #gnodes[2],
+    #         gnodes[3]  #gnodes[3]
+    #     )
+    # )
 
-    # Use in your demand object
-    demands.append(
-        demand(
-            k_req_vals,
-            gnodes[0],
-            gnodes[1]
+    # demands = generate_demands(gnodes, syst, mean_kbps=0.2, amp=0.5, noise_std=0.2, pattern="sinusoidal")
+    demands = generate_demands(gnodes, syst, mean_kbps=5, amp=1, noise_std=0, pattern="sinusoidal")
+
+    # --- Plot all demands ---
+    plt.figure(figsize=(8, 5))
+    for d in demands:
+        src_idx = gnodes.index(d.n1)
+        dst_idx = gnodes.index(d.n2)
+        plt.plot(
+            syst.T, d.K_REQ,
+            lw=1.6,
+            label=f"GS{src_idx} ↔ GS{dst_idx}"
         )
-    )
+    plt.xlabel("Time step (t)")
+    plt.ylabel("Key Rate Demand (kb/sec)")
+    plt.title("Generated GS–GS Demands over Time")
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.legend(fontsize=8)
+    plt.tight_layout()
+    plt.show()
+    # ------------------------
 
     return gnodes, hnodes, links, demands

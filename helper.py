@@ -163,23 +163,30 @@ def update_coordinates(method, hnodes, syst):
     elif method == "stratotegic":
         # Load CSV
         df = pd.read_csv("dataset/balloon_sim_data.csv")
-        # Keep only rows where Time_s is an integer
-        df_filtered = df[df["Time_s"] % 1 == 0].reset_index(drop=True)
+        
+        # Keep only rows where Time_s is approximately a multiple of syst.THETA (handles float rounding)
+        df_filtered = df[df["Time_s"] % syst.THETA == 0].reset_index(drop=True)
+        
+        # Keep only the first row for each unique Time_s
+        df_filtered = df_filtered.drop_duplicates(subset="Time_s", keep="first")
+        
         # Extract required columns
         result = df_filtered[["Time_s", "Longitude_deg", "Latitude_deg", "Altitude_m"]]
-
-        df_int = result[result["Time_s"].apply(float.is_integer)]
-
-        lons = df_int["Longitude_deg"].tolist()
-        lats = df_int["Latitude_deg"].tolist()
-
+        
+        print(result)
+        
+        # Convert to lists
+        lons = result["Longitude_deg"].tolist()
+        lats = result["Latitude_deg"].tolist()
+        
         new_lats = {}
         new_lons = {}
-
+        
         for idx_hnode, hnode in enumerate(hnodes):
-            new_lats[idx_hnode], new_lons[idx_hnode] = shift_trajectory(lats, lons, hnode.la[0], hnode.lg[0])
-            #print(new_lons[idx_hnode][0:int(len(syst.T))])
-            #print(new_lats[idx_hnode][0:int(len(syst.T))])
+            new_lats[idx_hnode], new_lons[idx_hnode] = shift_trajectory(
+                lats, lons, hnode.la[0], hnode.lg[0]
+            )
+
     else:
         raise ValueError("Method must be either 'wind' or 'stratotegic'")
 
@@ -224,7 +231,7 @@ def update_coordinates(method, hnodes, syst):
                 hnode.la[t] = lat_new
         elif method == "stratotegic":
             # Find the row corresponding to time t
-            row = result.loc[result["Time_s"] == t]
+            row = result.loc[result["Time_s"] == t * syst.THETA]
             if not row.empty:
                 for idx_hnode, hnode in enumerate(hnodes):
                     lon = new_lons[idx_hnode][t] #row["Longitude_deg"].values[0]
@@ -564,7 +571,7 @@ def calculate_key_rate(method, links, fog, rain, snow, syst,
     """
     Compute and store K_MAX values between given time steps [start_time, end_time).
     Parallelized across links and times.
-    Supports incremental runs by saving/loading results in result_file.
+    If result_file already contains all requested data, skip recomputation.
     """
 
     num_links = len(links)
@@ -573,14 +580,53 @@ def calculate_key_rate(method, links, fog, rain, snow, syst,
         end_time = num_time_slots
 
     print(f"⏱️ Calculating K_MAX from t={start_time} to t={end_time-1} ({end_time - start_time} time steps)")
-    
+
     # === Load checkpoint if exists ===
+    K_MAX = [None] * num_links
+    fully_covered = True  # assume full coverage until proven otherwise
+
     if os.path.exists(result_file):
         with open(result_file, "rb") as f:
             K_MAX = pickle.load(f)
         print(f"[INFO] Loaded checkpoint from {result_file}")
+
+        # Check if data fully covers requested interval
+        for idx_l in range(num_links):
+            if K_MAX[idx_l] is None or len(K_MAX[idx_l]) < end_time:
+                fully_covered = False
+                break
+            # check for missing values within range
+            if any(K_MAX[idx_l][t] is None for t in range(start_time, end_time)):
+                fully_covered = False
+                break
+
+        if fully_covered:
+            print(f"✅ Requested interval [{start_time}, {end_time}) fully covered in checkpoint.")
+
+            plt.figure(figsize=(10, 5))
+            T_range = range(num_time_slots)
+        
+            for idx_l, link_vals in enumerate(K_MAX):
+                if link_vals is None:
+                    continue
+                plt.plot(T_range, link_vals, label=f"Link {idx_l}")
+        
+            plt.xlabel("Time step (t)")
+            plt.ylabel("K_MAX (bits/s or appropriate unit)")
+            plt.title(f"Key Rate Evolution for {len(links)} Links ({start_time}–{end_time-1})")
+            plt.legend(ncol=3, fontsize=8)
+            plt.grid(True, linestyle="--", alpha=0.6)
+            plt.tight_layout()
+            plt.show()
+            
+            return K_MAX, None  # no need to recompute
+        else:
+            print(f"⚠️ Partial data found. Computing missing entries...")
+
     else:
+        print(f"[INFO] No existing checkpoint found. Creating new.")
         K_MAX = [None] * num_links
+        fully_covered = False
 
     # === Prepare geometry info once (for first link only) ===
     los_store = {}
@@ -609,34 +655,56 @@ def calculate_key_rate(method, links, fog, rain, snow, syst,
 
         los_store["d_list"] = d_los
         los_store["h_list"] = H_h
+
+        print(f"d_los: {d_los}")
+        print(f"H_h: {H_h}")
         break  # Only need one geometry reference
 
-    # === Prepare tasks ===
+    # === Prepare missing tasks only ===
     tasks = []
     for idx_l, l in enumerate(links):
+        if K_MAX[idx_l] is None:
+            K_MAX[idx_l] = [None] * num_time_slots
         for t in range(start_time, end_time):
-            tasks.append((idx_l, t, l, syst, method, fog, rain, snow))
+            if K_MAX[idx_l][t] is None:  # only compute missing entries
+                tasks.append((idx_l, t, l, syst, method, fog, rain, snow))
 
-    print(f"🧩 Total tasks: {len(tasks)} ({len(links)} links × {end_time - start_time} timesteps)")
+    print(f"🧩 Total tasks to compute: {len(tasks)} ({len(links)} links × {end_time - start_time} timesteps minus cached entries)")
 
     # === Parallel execution ===
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for idx_l, t, k_val in tqdm(executor.map(_compute_key_point, tasks, chunksize=10),
-                                    total=len(tasks),
-                                    desc="Computing key rates"):
-            if k_val is None:
-                continue
-            if K_MAX[idx_l] is None:
-                K_MAX[idx_l] = [None] * num_time_slots
-            K_MAX[idx_l][t] = k_val
+    if tasks:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for idx_l, t, k_val in tqdm(executor.map(_compute_key_point, tasks, chunksize=10),
+                                        total=len(tasks),
+                                        desc="Computing missing key rates"):
+                if k_val is None:
+                    continue
+                K_MAX[idx_l][t] = k_val
+    else:
+        print("✅ No missing values. Nothing to compute.")
 
-    # === Save checkpoint ===
+    # === Save updated checkpoint ===
     with open(result_file, "wb") as f:
         pickle.dump(K_MAX, f)
     print(f"[INFO] Saved updated results to {result_file}")
 
-    print(f"✅ Computation complete for interval {start_time}–{end_time-1}")
+    plt.figure(figsize=(10, 5))
+    T_range = range(num_time_slots)
 
+    for idx_l, link_vals in enumerate(K_MAX):
+        if link_vals is None:
+            continue
+        plt.plot(T_range, link_vals, label=f"Link {idx_l}")
+
+    plt.xlabel("Time step (t)")
+    plt.ylabel("K_MAX (bits/s or appropriate unit)")
+    plt.title(f"Key Rate Evolution for {len(links)} Links ({start_time}–{end_time-1})")
+    plt.legend(ncol=3, fontsize=8)
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
+    plt.show()
+
+    print(f"✅ Computation complete for interval {start_time}–{end_time-1}")
     return K_MAX, los_store
 
 
@@ -741,3 +809,66 @@ def download_data():
         },
         file_name
     )
+
+# ---------------------------------------------------------
+# Demand model: time-varying key rate demands across GS pairs
+# ---------------------------------------------------------
+def generate_demands(gnodes, syst, mean_kbps=0.02, amp=0.5, noise_std=0.2, pattern="sinusoidal",
+                     pair_subset=None, distance_scaling=True):
+    """
+    Generate realistic demand objects between GS pairs.
+
+    mean_kbps:        average key rate (bits/sec)
+    amp:              amplitude of diurnal variation (0–1)
+    noise_std:        std deviation of multiplicative Gaussian noise
+    pattern:          "sinusoidal" | "piecewise" | "flat"
+    pair_subset:      list of (i,j) tuples if you want fewer pairs
+    distance_scaling: scale demand by 1/distance to favor nearby GS pairs
+    """
+
+    def diurnal(t_idx):
+        # Convert time-step index to hour of the day
+        t_hours = (t_idx * syst.THETA) / 3600.0
+        hr = t_hours % 24
+
+        if pattern == "sinusoidal":
+            # 24-hour periodic demand
+            return 1.0 + amp * math.sin(2 * math.pi * hr / 24.0)
+        elif pattern == "piecewise":
+            # morning ramp-up, day plateau, night low
+            if hr < 6:   return 0.4
+            if hr < 10:  return 0.7
+            if hr < 18:  return 1.0
+            if hr < 22:  return 0.6
+            return 0.3
+        else:
+            return 1.0
+
+    def gs_distance(gs1, gs2):
+        # Approximate ground distance (degrees → km)
+        dx = (gs1.lg - gs2.lg) * 85   # longitudinal scaling
+        dy = (gs1.la - gs2.la) * 111  # latitudinal scaling
+        return math.sqrt(dx**2 + dy**2)
+
+    demand_list = []
+    pairs = pair_subset or [(i, j) for i in range(len(gnodes)) for j in range(i+1, len(gnodes))]
+
+    for (i, j) in pairs:
+        gs1, gs2 = gnodes[i], gnodes[j]
+
+        # Distance scaling factor (closer GSs → higher demand)
+        dist_factor = 1.0
+        if distance_scaling:
+            d = gs_distance(gs1, gs2)
+            dist_factor = 1.0 / (1.0 + d / 100.0)  # smooth decay beyond 100 km
+
+        k_vals = []
+        for t in syst.T:
+            base = mean_kbps * dist_factor
+            temporal = diurnal(t)
+            noise = 1.0 + random.gauss(0, noise_std)
+            k_vals.append(max(1e-6, base * temporal * noise))  # ensure positive rate
+
+        demand_list.append(demand(k_vals, gs1, gs2))
+
+    return demand_list
