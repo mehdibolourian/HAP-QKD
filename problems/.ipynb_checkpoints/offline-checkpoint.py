@@ -144,12 +144,6 @@ def offline(gss, haps, links, demands, f_qkp, problem):
                                     for t in syst.T
                                    ), index=1, priority=2, weight=1.0, abstol=1e-2, reltol=1e-2, name="Secondary")
 
-        # Secondary objective: maximize keys served
-        m.setObjectiveN(gp.quicksum(gp.quicksum(a[idx_l, t]
-                                                for idx_l, l in enumerate(links)
-                                               )
-                                    for t in syst.T
-                                   ), index=2, priority=1, weight=1.0, abstol=1e-2, reltol=1e-2, name="Triatry")
     ## Case 2: Maximize total served keys
     elif problem == 2:
         # Objective: maximize keys served
@@ -284,7 +278,6 @@ def offline(gss, haps, links, demands, f_qkp, problem):
     )
 
     # Demand-level and link-level key rate coordination (Note that r_h is a part of the maximization objective)
-    # r_h = min_{l:z_l=1}(r_1+r_2)
     m.addConstrs(
         (
             r_h[idx_d, t] >= r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]# + d.K_REQ[t] * KEY_RATE_SCALE * (1 - z[idx_l, idx_d, t])
@@ -294,15 +287,15 @@ def offline(gss, haps, links, demands, f_qkp, problem):
         ), name="demand_link_coordination_1"
     )
 
-    # Key rate and routing coordination (1)
-    m.addConstrs(
-        (
-            r_1[idx_l, idx_d, t] >= 1e-1 * z[idx_l, idx_d, t]
-            for idx_l, l in enumerate(links)
-            for idx_d, d in enumerate(demands)
-            for t        in syst.T
-        ), name="key_rate_routing_coordination_1"
-    )
+    # # Key rate and routing coordination (1)
+    # m.addConstrs(
+    #     (
+    #         r_1[idx_l, idx_d, t] >= 1e-1 * z[idx_l, idx_d, t]
+    #         for idx_l, l in enumerate(links)
+    #         for idx_d, d in enumerate(demands)
+    #         for t        in syst.T
+    #     ), name="key_rate_routing_coordination_1"
+    # )
     # Key rate and routing coordination (2)
     m.addConstrs(
         (

@@ -3,7 +3,7 @@ from libraries import *
 SYNTH_STRATO    = 1    ## 0: Wind, 1: Stratotegic Data
 
 COORDINATE_SCALE = 1
-KEY_RATE_SCALE   = 1e-2
+KEY_RATE_SCALE   = 1
 NUM_TIME_SLOTS   = 24 if SYNTH_STRATO else 4
 STORAGE_SCALE    = 1
 
@@ -156,16 +156,16 @@ def init_setup_real():
     #t, demand_dict, df = generate_keyrate_demands(hours=1, step_min=1/60)
 
     # Pick a profile, e.g. "enterprise"
-    # k_req_vals = [150] * len(syst.T) # 25600 bits/sec
+    k_req_vals = [10] * len(syst.T) # 25600 bits/sec
     
-    # # # Use in your demand object
-    # demands.append(
-    #     demand(
-    #         k_req_vals,
-    #         gnodes[0], #gnodes[2],
-    #         gnodes[1]  #gnodes[3]
-    #     )
-    # )
+    # Use in your demand object
+    demands.append(
+        demand(
+            k_req_vals,
+            gnodes[0], #gnodes[2],
+            gnodes[1]  #gnodes[3]
+        )
+    )
     # demands.append(
     #     demand(
     #         k_req_vals,
@@ -175,7 +175,7 @@ def init_setup_real():
     # )
 
     # demands = generate_demands(gnodes, syst, mean_kbps=0.2, amp=0.5, noise_std=0.2, pattern="sinusoidal")
-    demands = generate_demands(gnodes, syst, mean_kbps=5, amp=1, noise_std=0, pattern="sinusoidal")
+    # demands = generate_demands(gnodes, syst, mean_kbps=5, amp=1, noise_std=0, pattern="sinusoidal")
 
     # --- Plot all demands ---
     plt.figure(figsize=(8, 5))

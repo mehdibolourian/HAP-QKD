@@ -1,5 +1,1110 @@
 from libraries import *
 
+## For a given set of demands what is the minimum number of HAPs and where to place them to satisfy all the demands.
+def demand_feasibility(gss, demands):
+    MAX_HAPS = 10
+    c1_list_ref, c2_list_ref, c3_list_ref = [], [], []
+    lon0, lat0 = 279, 49
+
+    for num_h in range(1, MAX_HAPS):
+        haps = []
+        links = []
+
+        # Create Optimization Model
+        m = gp.Model("hap-qkd")
+
+        for n in range(num_h):
+            haps.append(hap([279]*len(syst.T), [49]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, f"HAP_{n}"))
+
+        # Update coordinates depending on model choice
+        if SYNTH_STRATO == 1:
+            update_coordinates("stratotegic", haps, syst)
+        else:
+            update_coordinates("wind", haps, syst)
+
+        ## Only once is enough
+        if num_h == 1:
+            for lon, lat in zip(haps[0].lg, haps[0].la):
+                c1, c2 = latlon_to_tangent(lon, lat, lon0, lat0)
+                c1_list_ref.append(c1)
+                c2_list_ref.append(c2)
+            c3_list_ref = haps[0].H
+
+        # Links: connect only GSs to HAPs
+        for gs_node in gss:
+            for hap_node in haps:
+                links.append(link(gs_node, hap_node, [100]*len(syst.T), [(0,0,0)]*len(syst.T), [1]*len(syst.T)))
+                links.append(link(hap_node, gs_node, [100]*len(syst.T), [(0,0,0)]*len(syst.T), [1]*len(syst.T)))
+
+        ## Decision Variables
+        # Dictionaries of decision variables instead of MVar arrays
+        r_1, r_2, r_h, a, z = {}, {}, {}, {}, {}
+
+        for idx_l, l in enumerate(links):
+            for idx_d, d in enumerate(demands):
+                for t in syst.T:
+                    r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+                    r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+                    z[idx_l, idx_d, t] = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}", vtype=GRB.BINARY)
+
+        for idx_d, d in enumerate(demands):
+            for t in syst.T:
+                r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+
+        for idx_l, l in enumerate(links):
+            for t in syst.T:
+                a[idx_l, t] = m.addVar(name=f"a_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY)
+
+        nodes = gss + haps
+
+        # k (key rate) and d (distance)
+        k, d, kz = {}, {}, {}
+        for idx_l, l in enumerate(links):
+            for t in syst.T:
+                d[idx_l, t] = m.addVar(name=f"d_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=15 * COORDINATE_SCALE, ub=2e2 * COORDINATE_SCALE) # LoS distance (Min height in strat.)
+                    
+                k[idx_l, t] = m.addVar(name=f"k_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+                kz[idx_l, t] = m.addVar(name=f"kz_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+
+                dpts = np.linspace(15 * COORDINATE_SCALE, 2e2 * COORDINATE_SCALE, 4)
+                kpts = [calculate_key_rate_planning("theoretical", 0, d/COORDINATE_SCALE, t) * KEY_RATE_SCALE for d in dpts]
+
+                #print(f"kpts: {kpts}")
+                m.addGenConstrPWL(d[idx_l, t], k[idx_l, t], dpts, kpts, name=f"pwl_key_rate_{idx_l}_{t}")
+
+        # Coordinate decision variables for each HAP and time
+        c1, c2 = {}, {}  # x, y in km
+        for idx_h, hnode in enumerate(haps):
+            for t in syst.T:
+                c1[idx_h, t] = m.addVar(lb=-1e2*COORDINATE_SCALE, ub=1e2*COORDINATE_SCALE, vtype=GRB.CONTINUOUS, name=f"c1_{idx_h}_{t}")
+                c2[idx_h, t] = m.addVar(lb=-1e2*COORDINATE_SCALE, ub=1e2*COORDINATE_SCALE, vtype=GRB.CONTINUOUS, name=f"c2_{idx_h}_{t}")
+
+        # Secondary objective: maximize d
+        m.setObjective(1, GRB.MAXIMIZE)
+
+        m.setParam("MIPGap", 1e-4)
+        m.setParam("MIPGapAbs", 1e-4)
+        m.setParam("FeasibilityTol", 1e-4)
+        m.setParam("IntFeasTol", 1e-4)
+        m.setParam("OptimalityTol", 1e-4)
+        m.Params.Presolve = 2
+        m.Params.Method = 2
+        m.Params.Cuts = 2
+        m.Params.Heuristics = 0.25
+        m.Params.MIPFocus = 1
+        m.Params.NumericFocus = 1
+        m.Params.Threads = 0
+        m.Params.NodefileStart = 0.5
+        m.Params.NoRelHeurTime = 20
+        m.Params.ConcurrentMIP = 1
+
+        ## Constraints     
+        # Maximum Link Capacity --> Enforces only r_1
+        m.addConstrs(
+            (
+                gp.quicksum(r_1[idx_l, idx_d, t]
+                            for idx_d, d in enumerate(demands)
+                           ) <= k[idx_l, t]
+             for idx_l, l in enumerate(links)
+             for t in syst.T
+            ), name="max_link_capacity"
+        )
+
+        # Maximum Tx/Rx Connection
+        m.addConstrs(
+            (gp.quicksum(z[idx_l, idx_d, t]
+                         for idx_l, l in enumerate(links)
+                         for idx_d, d in enumerate(demands)
+                         if l.n1 == n
+                        ) <= n.N_TX
+             for idx_n, n in enumerate(nodes)
+             for t in syst.T),
+            name="max_tx_connections"
+        )
+
+        m.addConstrs(
+            (gp.quicksum(z[idx_l, idx_d, t]
+                         for idx_l, l in enumerate(links)
+                         for idx_d, d in enumerate(demands)
+                         if l.n2 == n
+                        ) <= n.N_RX
+             for idx_n, n in enumerate(nodes)
+             for t in syst.T),
+            name="max_rx_connections"
+        )
+
+        # Flow conservation
+        m.addConstrs(
+            (gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
+                         for idx_l, l in enumerate(links)
+                         if l.n1 == d.n1)
+             - gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
+                           for idx_l, l in enumerate(links)
+                           if l.n2 == d.n1)
+             == r_h[idx_d, t]
+             for idx_d, d in enumerate(demands)
+             for t in syst.T),
+            name="flow_conservation_1"
+        )
+
+        m.addConstrs(
+            (gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
+                         for idx_l, l in enumerate(links)
+                         if l.n2 == d.n2)
+             - gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
+                           for idx_l, l in enumerate(links)
+                           if l.n1 == d.n2)
+             == r_h[idx_d, t]
+             for idx_d, d in enumerate(demands)
+             for t in syst.T),
+            name="flow_conservation_2"
+        )
+
+        m.addConstrs(
+            (gp.quicksum((r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t])
+                         for idx_l, l in enumerate(links)
+                         if l.n1 == n
+                        )
+             - gp.quicksum((r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t])
+                           for idx_l, l in enumerate(links)
+                           if l.n2 == n
+                          )
+             == 0
+             for idx_d, d in enumerate(demands)
+             for n in gss + haps
+             if n != d.n1 and n != d.n2
+             for t in syst.T),
+            name="flow_conservation_3"
+        )
+        
+        # Demand-level and link-level key rate coordination (Note that r_h is a part of the maximization objective)
+        m.addConstrs(
+            (r_h[idx_d, t] >= r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
+             for idx_l, l in enumerate(links)
+             for idx_d, d in enumerate(demands)
+             for t in syst.T),
+            name="demand_link_coordination_1"
+        )
+
+        # # Key rate and routing coordination (1)
+        # m.addConstrs(
+        #     (r_1[idx_l, idx_d, t] >= 1e-2 * z[idx_l, idx_d, t]
+        #      for idx_l, l in enumerate(links)
+        #      for idx_d, d in enumerate(demands)
+        #      for t in syst.T),
+        #     name="key_rate_routing_coordination_1"
+        # )
+
+        # Key rate and routing coordination (2)
+        m.addConstrs(
+            (r_1[idx_l, idx_d, t] <= d.K_REQ[t] * z[idx_l, idx_d, t]
+             for idx_l, l in enumerate(links)
+             for idx_d, d in enumerate(demands)
+             for t in syst.T),
+            name="key_rate_routing_coordination_2"
+        )
+
+        # QKP on HAPs and GSs
+        m.addConstrs(
+            (r_2[idx_l, idx_d, 0] == 0
+             for idx_l, l in enumerate(links)
+             for idx_d, d in enumerate(demands)),
+            name="initial_empty_QKP"
+        )
+        
+        m.addConstrs(
+            (gp.quicksum(a[idx_l, tp] for tp in range(t))
+             >= syst.THETA * gp.quicksum(r_2[idx_l, idx_d, t] for idx_d, d in enumerate(demands)) * STORAGE_SCALE
+             for idx_l, l in enumerate(links)
+             for t in syst.T[1:]),
+            name="qkp_min_capacity"
+        )
+
+        m.addConstrs(
+            (a[idx_l, t] == syst.THETA * (kz[idx_l, t]
+                                          - gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
+                                                        for idx_d, d in enumerate(demands))) * STORAGE_SCALE
+             for idx_l, l in enumerate(links)
+             for t in syst.T),
+            name="qkp_sequence"
+        )
+
+        m.addConstrs(
+            (
+                gp.quicksum(a[idx_l, tp]
+                            for tp in range(t+1)
+                           ) >= 0
+                for idx_l, l in enumerate(links)
+                for t        in syst.T
+            ), name="positive_storage"
+        )
+
+        ########### Exclusive constraints ###########
+
+        # Demand satisfaction guarantee
+        m.addConstrs(
+            (gp.quicksum(r_h[idx_d, t] for t in syst.T) == sum(d.K_REQ[t] for t in syst.T) * KEY_RATE_SCALE
+             for idx_d, d in enumerate(demands)),
+            name="demand_satisfaction_guarantee"
+        )
+
+        # Active link check
+        m.addConstrs(
+            (
+                kz[idx_l, t] <= k[idx_l, t]
+                for idx_l, l in enumerate(links)
+                for t in syst.T
+            ), name="keyrate_active_link_1"
+        )
+
+        m.addConstrs(
+            (
+                kz[idx_l, t] <= 1e7 * gp.quicksum(z[idx_l, idx_d, t]
+                                                   for idx_d, d in enumerate(demands)
+                                                  )
+                for idx_l, l in enumerate(links)
+                for t in syst.T
+            ), name="keyrate_active_link_2"
+        )
+
+        m.addConstrs(
+            (
+                kz[idx_l, t] >= k[idx_l, t] - 1e7 * (1 - gp.quicksum(z[idx_l, idx_d, t]
+                                                                      for idx_d, d in enumerate(demands)
+                                                                     )
+                                                     )
+                for idx_l, l in enumerate(links)
+                for t in syst.T
+            ), name="keyrate_active_link_3"
+        )
+
+        m.addConstrs(
+            (c1[idx_h, t] == c1_list_ref[t] + (c1[idx_h, 0] - c1_list_ref[0])
+             for idx_h, h in enumerate(haps)
+             for t in syst.T if t >= 1),
+            name="shift_trajectory_1"
+        )
+
+        m.addConstrs(
+            (c2[idx_h, t] == c2_list_ref[t] + (c2[idx_h, 0] - c2_list_ref[0])
+             for idx_h, h in enumerate(haps)
+             for t in syst.T if t >= 1),
+            name="shift_trajectory_2"
+        )
+
+        # For each link l = (hap, gs), add the SOCP constraint tying d to (c1,c2,c3)
+        for idx_l, l in enumerate(links):
+            # identify which endpoint is HAP and which is GS
+            if isinstance(l.n1, hap) and isinstance(l.n2, gs):
+                hap_idx, gs_node = haps.index(l.n1), l.n2
+            elif isinstance(l.n2, hap) and isinstance(l.n1, gs):
+                hap_idx, gs_node = haps.index(l.n2), l.n1
+
+            [cg1, cg2] = latlon_to_tangent(gs_node.lg, gs_node.la, 279, 49)
+
+            for t in syst.T:
+                dx = c1[hap_idx, t] - cg1*COORDINATE_SCALE
+                dy = c2[hap_idx, t] - cg2*COORDINATE_SCALE
+                m.addQConstr(d[idx_l, t]*d[idx_l, t] >= dx*dx + dy*dy + haps[hap_idx].H[t]*haps[hap_idx].H[t]*COORDINATE_SCALE*COORDINATE_SCALE,
+                             name=f"dist_cone_{idx_l}_{t}")
+                             
+        ## Solve
+        m.optimize()
+
+        if m.status == GRB.OPTIMAL:
+            print("\n=========== OPTIMAL SOLUTION FOUND ===========")
+    
+            solution = {
+                "r_h":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_h.items()},
+                "r_1":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_1.items()},
+                "r_2":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_2.items()},
+                "a":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in a.items()},
+                "z":   {k: v.X for k, v in z.items()},
+                "kz":  {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in kz.items()},
+                "k":   {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in k.items()},
+                "d":   {k: round(v.X / COORDINATE_SCALE, 3) for k, v in d.items()},
+                "c1":  {k: round(v.X / COORDINATE_SCALE, 3) for k, v in c1.items()},
+                "c2":  {k: round(v.X / COORDINATE_SCALE, 3) for k, v in c2.items()}
+            }
+
+            key_rate_m = min(solution["k"][idx_l, t]
+                             for idx_l, l in enumerate(links)
+                             for t in syst.T
+                            )
+            #key_rate_s = sum(solution["k"])
+            
+            print(f"Minimum link key rate: {key_rate_m}") #, Sum: {key_rate_s}")
+
+            for idx_l, l in enumerate(links):
+                for idx_d, d in enumerate(demands):
+                    Z = sum(solution["z"][idx_l, idx_d, t]
+                            for t in syst.T
+                           )
+                    if Z > 0:
+                        print(f"SELECTED: link.n1: {l.n1.tag}, link.n2: {l.n2.tag}")
+                        
+            plot_z_timeline(solution["z"], links, demands, figsize=(10,6))
+            
+            # pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
+            # pp.pprint(solution)
+    
+            # Actual HAP trajectories
+            actual_lons = [hnode.lg for hnode in haps]
+            actual_lats = [hnode.la for hnode in haps]
+            actual_labels = [f"HAP_{idx_hnode}_actual" for idx_hnode, _ in enumerate(haps)]
+            
+            # Planned HAP trajectories
+            planned_lons = []
+            planned_lats = []
+            for idx_hnode in range(len(haps)):
+                lon_series = []
+                lat_series = []
+                for t in syst.T:
+                    x = solution["c1"].get((idx_hnode,t))
+                    y = solution["c2"].get((idx_hnode,t))
+                    if x is not None and y is not None:
+                        # lon, lat = xy_to_lonlat(x, y)
+                        lon, lat = tangent_to_latlon(x, y, 279, 49)
+                        lon_series.append(lon)   # shift if needed
+                        lat_series.append(lat)
+                planned_lons.append(lon_series)
+                planned_lats.append(lat_series)
+            planned_labels = [f"HAP_{idx_hnode}*" for idx_hnode in range(len(haps))]
+            
+            # Ground Stations (replicate coordinates across all T so they plot in animation)
+            gs_lons = []
+            gs_lats = []
+            for gnode in gss:
+                gs_lons.append([gnode.lg] * len(syst.T))   # repeat longitude for all time steps
+                gs_lats.append([gnode.la] * len(syst.T))   # repeat latitude for all time steps
+            gs_labels = [f"GS_{idx_gs}" for idx_gs, _ in enumerate(gss)]
+    
+            all_lons = planned_lons + gs_lons
+            all_lats = planned_lats + gs_lats
+            all_labels = planned_labels + gs_labels
+    
+            plot_connectivity_graph_planning(gss, haps, links, 
+                            planned_lons=planned_lons,
+                            planned_lats=planned_lats,
+                            planned_labels=planned_labels)
+
+            plot_connectivity_graph_planning_3d(gss, haps, links, 
+                            planned_lons=planned_lons,
+                            planned_lats=planned_lats,
+                            planned_labels=planned_labels)
+
+            print(f"The minimum number of required HAPs: {num_h}")
+
+            # return solution
+        else:
+            print(f"No optimal solution found for {num_h} HAPs.")
+            solution = None
+
+    return solution
+
+## Find the optimal placement of the HAPs to reach the maximum key generation for all the end-to-end paths between GS pairs. 
+def placement(gss, haps, links):
+    c1_list_ref, c2_list_ref, c3_list_ref = [], [], []
+    lon0, lat0 = 279, 49
+
+    demands = []
+    for idx_g1, g1 in enumerate(gss):
+        for idx_g2, g2 in enumerate(gss):
+            if idx_g2 != idx_g1:
+                demands.append(
+                    demand(
+                        100,
+                        gss[idx_g1],
+                        gss[idx_g2]
+                    )
+                )
+
+    # Create Optimization Model
+    m = gp.Model("hap-qkd")
+
+    for lon, lat in zip(haps[0].lg, haps[0].la):
+        c1, c2 = latlon_to_tangent(lon, lat, lon0, lat0)
+        c1_list_ref.append(c1)
+        c2_list_ref.append(c2)
+    c3_list_ref = haps[0].H
+
+    ## Decision Variables
+    # Dictionaries of decision variables instead of MVar arrays
+    z, o = {}, {}
+
+    for idx_l, l in enumerate(links):
+        for idx_d, d in enumerate(demands):
+            for t in syst.T:
+                z[idx_l, idx_d, t] = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}", vtype=GRB.BINARY)
+
+    nodes = gss + haps
+
+    # ## Node order variable --> To prevent subtours
+    # for idx_n, n in enumerate(nodes):
+    #     for idx_d, d in enumerate(demands):
+    #         for t in syst.T:
+    #             o[idx_n, idx_d, t] = m.addVar(name=f"o_{idx_n}_{idx_d}_{t}", vtype=GRB.CONTINUOUS)
+
+    # k (key rate) and d (distance)
+    k, d, kz = {}, {}, {}
+    for idx_l, l in enumerate(links):
+        for t in syst.T:
+            d[idx_l, t] = m.addVar(name=f"d_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=15 * COORDINATE_SCALE, ub=2e2 * COORDINATE_SCALE) # LoS distance (Min height in strat.)
+                
+            k[idx_l, t] = m.addVar(name=f"k_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+            kz[idx_l, t] = m.addVar(name=f"kz_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+
+            dpts = np.linspace(15 * COORDINATE_SCALE, 2e2 * COORDINATE_SCALE, 2)
+            kpts = [calculate_key_rate_planning("theoretical", 0, d/COORDINATE_SCALE, t) * KEY_RATE_SCALE for d in dpts]
+
+            #print(f"kpts: {kpts}")
+            m.addGenConstrPWL(d[idx_l, t], k[idx_l, t], dpts, kpts, name=f"pwl_key_rate_{idx_l}_{t}")
+
+    # Coordinate decision variables for each HAP and time
+    c1, c2 = {}, {}  # x, y in km
+    for idx_h, hnode in enumerate(haps):
+        for t in syst.T:
+            c1[idx_h, t] = m.addVar(lb=-1e2*COORDINATE_SCALE, ub=1e2*COORDINATE_SCALE, vtype=GRB.CONTINUOUS, name=f"c1_{idx_h}_{t}")
+            c2[idx_h, t] = m.addVar(lb=-1e2*COORDINATE_SCALE, ub=1e2*COORDINATE_SCALE, vtype=GRB.CONTINUOUS, name=f"c2_{idx_h}_{t}")
+
+    # Secondary objective: maximize d
+    m.setObjective(gp.quicksum(gp.quicksum(kz[idx_l, t]
+                                           for idx_l, l in enumerate(links)
+                                          )
+                               for t in syst.T
+                              ), GRB.MAXIMIZE)
+
+    m.setParam("MIPGap", 1e-2)
+    m.setParam("MIPGapAbs", 1e-2)
+    m.setParam("FeasibilityTol", 1e-2)
+    m.setParam("IntFeasTol", 1e-2)
+    m.setParam("OptimalityTol", 1e-2)
+    m.Params.Presolve = 2
+    m.Params.Method = 2
+    m.Params.Cuts = 2
+    m.Params.Heuristics = 0.25
+    m.Params.MIPFocus = 1
+    m.Params.NumericFocus = 1
+    m.Params.Threads = 0
+    m.Params.NodefileStart = 0.5
+    m.Params.NoRelHeurTime = 20
+    m.Params.ConcurrentMIP = 1
+
+    ## Constraints
+    # # Maximum Tx/Rx Connection
+    # m.addConstrs(
+    #     (gp.quicksum(z[idx_l, idx_d, t]
+    #                  for idx_l, l in enumerate(links)
+    #                  for idx_d, d in enumerate(demands)
+    #                  if l.n1 == n
+    #                 ) <= n.N_TX
+    #      for idx_n, n in enumerate(nodes)
+    #      for t in syst.T),
+    #     name="max_tx_connections"
+    # )
+
+    # m.addConstrs(
+    #     (gp.quicksum(z[idx_l, idx_d, t]
+    #                  for idx_l, l in enumerate(links)
+    #                  for idx_d, d in enumerate(demands)
+    #                  if l.n2 == n
+    #                 ) <= n.N_RX
+    #      for idx_n, n in enumerate(nodes)
+    #      for t in syst.T),
+    #     name="max_rx_connections"
+    # )
+
+    # Flow conservation
+    m.addConstrs(
+        (gp.quicksum(z[idx_l, idx_d, t]
+                     for idx_l, l in enumerate(links)
+                     if l.n1 == d.n1)
+         - gp.quicksum(z[idx_l, idx_d, t]
+                       for idx_l, l in enumerate(links)
+                       if l.n2 == d.n1)
+         == 1
+         for idx_d, d in enumerate(demands)
+         for t in syst.T),
+        name="flow_conservation_1"
+    )
+
+    m.addConstrs(
+        (gp.quicksum(z[idx_l, idx_d, t]
+                     for idx_l, l in enumerate(links)
+                     if l.n2 == d.n2)
+         - gp.quicksum(z[idx_l, idx_d, t]
+                       for idx_l, l in enumerate(links)
+                       if l.n1 == d.n2)
+         == 1
+         for idx_d, d in enumerate(demands)
+         for t in syst.T),
+        name="flow_conservation_2"
+    )
+
+    m.addConstrs(
+        (gp.quicksum(z[idx_l, idx_d, t]
+                     for idx_l, l in enumerate(links)
+                     if l.n1 == n
+                    )
+         - gp.quicksum(z[idx_l, idx_d, t]
+                       for idx_l, l in enumerate(links)
+                       if l.n2 == n
+                      )
+         == 0
+         for idx_d, d in enumerate(demands)
+         for n in gss + haps
+         if n != d.n1 and n != d.n2
+         for t in syst.T),
+        name="flow_conservation_3"
+    )
+
+    # # MTZ subtour elimination --> Eliminates pointless single/multi-hop loops in the flows --> Uses an ordering values for all nodes
+    # # --> The order values should only increase on the path --> A decrease in order value == a loop (X)
+    # M = len(nodes)
+    # m.addConstrs(
+    #     (
+    #         o[nodes.index(l.n2), idx_d, t] >= o[nodes.index(l.n1), idx_d, t] + 1 - M * (1 - z[idx_l, idx_d, t])
+    #         for idx_l, l in enumerate(links)
+    #         for idx_d, d in enumerate(demands)
+    #         for t        in syst.T
+    #     ), name="ordering_constraint_1"
+    # )
+    # m.addConstrs(
+    #     (
+    #         o[nodes.index(d.n1), idx_d, t] == 1
+    #         for idx_d, d in enumerate(demands)
+    #         for t        in syst.T
+    #     ), name="ordering_constraint_2"
+    # )
+    # m.addConstrs(
+    #     (
+    #         o[nodes.index(d.n2), idx_d, t] == M
+    #         for idx_d, d in enumerate(demands)
+    #         for t        in syst.T
+    #     ), name="ordering_constraint_2"
+    # )
+
+    ########### Exclusive constraints ###########
+
+    # Active link check
+    m.addConstrs(
+        (
+            kz[idx_l, t] <= k[idx_l, t]
+            for idx_l, l in enumerate(links)
+            for t in syst.T
+        ), name="keyrate_active_link_1"
+    )
+
+    m.addConstrs(
+        (
+            kz[idx_l, t] <= 1e7 * gp.quicksum(z[idx_l, idx_d, t]
+                                               for idx_d, d in enumerate(demands)
+                                              )
+            for idx_l, l in enumerate(links)
+            for t in syst.T
+        ), name="keyrate_active_link_2"
+    )
+
+    m.addConstrs(
+        (
+            kz[idx_l, t] >= k[idx_l, t] - 1e7 * (1 - gp.quicksum(z[idx_l, idx_d, t]
+                                                                  for idx_d, d in enumerate(demands)
+                                                                 )
+                                                 )
+            for idx_l, l in enumerate(links)
+            for t in syst.T
+        ), name="keyrate_active_link_3"
+    )
+
+    m.addConstrs(
+        (c1[idx_h, t] == c1_list_ref[t] + (c1[idx_h, 0] - c1_list_ref[0])
+         for idx_h, h in enumerate(haps)
+         for t in syst.T if t >= 1),
+        name="shift_trajectory_1"
+    )
+
+    m.addConstrs(
+        (c2[idx_h, t] == c2_list_ref[t] + (c2[idx_h, 0] - c2_list_ref[0])
+         for idx_h, h in enumerate(haps)
+         for t in syst.T if t >= 1),
+        name="shift_trajectory_2"
+    )
+
+    # For each link l = (hap, gs), add the SOCP constraint tying d to (c1,c2,c3)
+    for idx_l, l in enumerate(links):
+        # identify which endpoint is HAP and which is GS
+        if isinstance(l.n1, hap) and isinstance(l.n2, gs):
+            hap_idx, gs_node = haps.index(l.n1), l.n2
+        elif isinstance(l.n2, hap) and isinstance(l.n1, gs):
+            hap_idx, gs_node = haps.index(l.n2), l.n1
+
+        [cg1, cg2] = latlon_to_tangent(gs_node.lg, gs_node.la, 279, 49)
+
+        for t in syst.T:
+            dx = c1[hap_idx, t] - cg1*COORDINATE_SCALE
+            dy = c2[hap_idx, t] - cg2*COORDINATE_SCALE
+            m.addQConstr(d[idx_l, t]*d[idx_l, t] >= dx*dx + dy*dy + haps[hap_idx].H[t]*haps[hap_idx].H[t]*COORDINATE_SCALE*COORDINATE_SCALE,
+                         name=f"dist_cone_{idx_l}_{t}")
+                         
+    ## Solve
+    m.optimize()
+
+    if m.status == GRB.OPTIMAL:
+        print("\n=========== OPTIMAL SOLUTION FOUND ===========")
+
+        solution = {
+            "z":   {k: v.X for k, v in z.items()},
+            #"o":   {k: round(v.X, 3) for k, v in o.items()},
+            "kz":  {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in kz.items()},
+            "k":   {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in k.items()},
+            "d":   {k: round(v.X / COORDINATE_SCALE, 3) for k, v in d.items()},
+            "c1":  {k: round(v.X / COORDINATE_SCALE, 3) for k, v in c1.items()},
+            "c2":  {k: round(v.X / COORDINATE_SCALE, 3) for k, v in c2.items()}
+        }
+
+        key_rate_m = min(solution["k"][idx_l, t]
+                         for idx_l, l in enumerate(links)
+                         for t in syst.T
+                        )
+        #key_rate_s = sum(solution["k"])
+        
+        print(f"Minimum link key rate: {key_rate_m}") #, Sum: {key_rate_s}")
+
+        for idx_l, l in enumerate(links):
+            for idx_d, d in enumerate(demands):
+                Z = sum(solution["z"][idx_l, idx_d, t]
+                        for t in syst.T
+                       )
+                if Z > 0:
+                    print(f"SELECTED: link.n1: {l.n1.tag}, link.n2: {l.n2.tag}")
+                    
+        plot_z_timeline(solution["z"], links, demands, figsize=(10,6))
+        
+        # pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
+        # pp.pprint(solution)
+
+        # Actual HAP trajectories
+        actual_lons = [hnode.lg for hnode in haps]
+        actual_lats = [hnode.la for hnode in haps]
+        actual_labels = [f"HAP_{idx_hnode}_actual" for idx_hnode, _ in enumerate(haps)]
+        
+        # Planned HAP trajectories
+        planned_lons = []
+        planned_lats = []
+        for idx_hnode in range(len(haps)):
+            lon_series = []
+            lat_series = []
+            for t in syst.T:
+                x = solution["c1"].get((idx_hnode,t))
+                y = solution["c2"].get((idx_hnode,t))
+                if x is not None and y is not None:
+                    # lon, lat = xy_to_lonlat(x, y)
+                    lon, lat = tangent_to_latlon(x, y, 279, 49)
+                    lon_series.append(lon)   # shift if needed
+                    lat_series.append(lat)
+            planned_lons.append(lon_series)
+            planned_lats.append(lat_series)
+        planned_labels = [f"HAP_{idx_hnode}*" for idx_hnode in range(len(haps))]
+        
+        # Ground Stations (replicate coordinates across all T so they plot in animation)
+        gs_lons = []
+        gs_lats = []
+        for gnode in gss:
+            gs_lons.append([gnode.lg] * len(syst.T))   # repeat longitude for all time steps
+            gs_lats.append([gnode.la] * len(syst.T))   # repeat latitude for all time steps
+        gs_labels = [f"GS_{idx_gs}" for idx_gs, _ in enumerate(gss)]
+
+        all_lons = planned_lons + gs_lons
+        all_lats = planned_lats + gs_lats
+        all_labels = planned_labels + gs_labels
+
+        plot_connectivity_graph_planning(gss, haps, links, 
+                        planned_lons=planned_lons,
+                        planned_lats=planned_lats,
+                        planned_labels=planned_labels)
+
+        plot_connectivity_graph_planning_3d(gss, haps, links, 
+                        planned_lons=planned_lons,
+                        planned_lats=planned_lats,
+                        planned_labels=planned_labels)
+
+        # return solution
+    else:
+        solution = None
+
+    return solution
+
+# ## Find the optimal placement of the HAPs to reach the maximum key generation for all the end-to-end paths between GS pairs. 
+# def placement(gss, haps, links):
+#     c1_list_ref, c2_list_ref, c3_list_ref = [], [], []
+#     lon0, lat0 = 279, 49
+
+#     demands = []
+#     for idx_g1, g1 in enumerate(gss):
+#         for idx_g2, g2 in enumerate(gss):
+#             if idx_g2 != idx_g1:
+#                 demands.append(
+#                     demand(
+#                         100,
+#                         gss[idx_g1],
+#                         gss[idx_g2]
+#                     )
+#                 )
+
+#     # Create Optimization Model
+#     m = gp.Model("hap-qkd")
+
+#     for lon, lat in zip(haps[0].lg, haps[0].la):
+#         c1, c2 = latlon_to_tangent(lon, lat, lon0, lat0)
+#         c1_list_ref.append(c1)
+#         c2_list_ref.append(c2)
+#     c3_list_ref = haps[0].H
+
+#     ## Decision Variables
+#     # Dictionaries of decision variables instead of MVar arrays
+#     r_1, r_h, a, z, o = {}, {}, {}, {}, {}
+
+#     for idx_l, l in enumerate(links):
+#         for idx_d, d in enumerate(demands):
+#             for t in syst.T:
+#                 r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+#                 z[idx_l, idx_d, t] = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}", vtype=GRB.BINARY)
+
+#     for idx_d, d in enumerate(demands):
+#         for t in syst.T:
+#             r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+
+#     nodes = gss + haps
+
+#     # ## Node order variable --> To prevent subtours
+#     # for idx_n, n in enumerate(nodes):
+#     #     for idx_d, d in enumerate(demands):
+#     #         for t in syst.T:
+#     #             o[idx_n, idx_d, t] = m.addVar(name=f"o_{idx_n}_{idx_d}_{t}", vtype=GRB.CONTINUOUS)
+
+#     # k (key rate) and d (distance)
+#     k, d, kz = {}, {}, {}
+#     for idx_l, l in enumerate(links):
+#         for t in syst.T:
+#             d[idx_l, t] = m.addVar(name=f"d_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=15 * COORDINATE_SCALE, ub=2e2 * COORDINATE_SCALE) # LoS distance (Min height in strat.)
+                
+#             k[idx_l, t] = m.addVar(name=f"k_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+#             kz[idx_l, t] = m.addVar(name=f"kz_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
+
+#             dpts = np.linspace(15 * COORDINATE_SCALE, 2e2 * COORDINATE_SCALE, 4)
+#             kpts = [calculate_key_rate_planning("theoretical", 0, d/COORDINATE_SCALE, t) * KEY_RATE_SCALE for d in dpts]
+
+#             #print(f"kpts: {kpts}")
+#             m.addGenConstrPWL(d[idx_l, t], k[idx_l, t], dpts, kpts, name=f"pwl_key_rate_{idx_l}_{t}")
+
+#     # Coordinate decision variables for each HAP and time
+#     c1, c2 = {}, {}  # x, y in km
+#     for idx_h, hnode in enumerate(haps):
+#         for t in syst.T:
+#             c1[idx_h, t] = m.addVar(lb=-1e2*COORDINATE_SCALE, ub=1e2*COORDINATE_SCALE, vtype=GRB.CONTINUOUS, name=f"c1_{idx_h}_{t}")
+#             c2[idx_h, t] = m.addVar(lb=-1e2*COORDINATE_SCALE, ub=1e2*COORDINATE_SCALE, vtype=GRB.CONTINUOUS, name=f"c2_{idx_h}_{t}")
+
+#     # Secondary objective: maximize d
+#     m.setObjective(gp.quicksum(gp.quicksum(r_h[idx_d, t]
+#                                            for idx_d, d in enumerate(demands)
+#                                           )
+#                                for t in syst.T
+#                               ), GRB.MAXIMIZE)
+
+#     m.setParam("MIPGap", 1e-2)
+#     m.setParam("MIPGapAbs", 1e-2)
+#     m.setParam("FeasibilityTol", 1e-2)
+#     m.setParam("IntFeasTol", 1e-2)
+#     m.setParam("OptimalityTol", 1e-2)
+#     m.Params.Presolve = 2
+#     m.Params.Method = 2
+#     m.Params.Cuts = 2
+#     m.Params.Heuristics = 0.25
+#     m.Params.MIPFocus = 1
+#     m.Params.NumericFocus = 1
+#     m.Params.Threads = 0
+#     m.Params.NodefileStart = 0.5
+#     m.Params.NoRelHeurTime = 20
+#     m.Params.ConcurrentMIP = 1
+
+#     ## Constraints
+#     # Maximum Tx/Rx Connection
+#     m.addConstrs(
+#         (gp.quicksum(z[idx_l, idx_d, t]
+#                      for idx_l, l in enumerate(links)
+#                      for idx_d, d in enumerate(demands)
+#                      if l.n1 == n
+#                     ) <= n.N_TX
+#          for idx_n, n in enumerate(nodes)
+#          for t in syst.T),
+#         name="max_tx_connections"
+#     )
+
+#     m.addConstrs(
+#         (gp.quicksum(z[idx_l, idx_d, t]
+#                      for idx_l, l in enumerate(links)
+#                      for idx_d, d in enumerate(demands)
+#                      if l.n2 == n
+#                     ) <= n.N_RX
+#          for idx_n, n in enumerate(nodes)
+#          for t in syst.T),
+#         name="max_rx_connections"
+#     )
+
+#     # Flow conservation
+#     m.addConstrs(
+#         (gp.quicksum(r_1[idx_l, idx_d, t]
+#                      for idx_l, l in enumerate(links)
+#                      if l.n1 == d.n1)
+#          - gp.quicksum(r_1[idx_l, idx_d, t]
+#                        for idx_l, l in enumerate(links)
+#                        if l.n2 == d.n1)
+#          == r_h[idx_d, t]
+#          for idx_d, d in enumerate(demands)
+#          for t in syst.T),
+#         name="flow_conservation_1"
+#     )
+
+#     m.addConstrs(
+#         (gp.quicksum(r_1[idx_l, idx_d, t]
+#                      for idx_l, l in enumerate(links)
+#                      if l.n2 == d.n2)
+#          - gp.quicksum(r_1[idx_l, idx_d, t]
+#                        for idx_l, l in enumerate(links)
+#                        if l.n1 == d.n2)
+#          == r_h[idx_d, t]
+#          for idx_d, d in enumerate(demands)
+#          for t in syst.T),
+#         name="flow_conservation_2"
+#     )
+
+#     m.addConstrs(
+#         (gp.quicksum(r_1[idx_l, idx_d, t]
+#                      for idx_l, l in enumerate(links)
+#                      if l.n1 == n
+#                     )
+#          - gp.quicksum(r_1[idx_l, idx_d, t]
+#                        for idx_l, l in enumerate(links)
+#                        if l.n2 == n
+#                       )
+#          == 0
+#          for idx_d, d in enumerate(demands)
+#          for n in gss + haps
+#          if n != d.n1 and n != d.n2
+#          for t in syst.T),
+#         name="flow_conservation_3"
+#     )
+
+#     # # MTZ subtour elimination --> Eliminates pointless single/multi-hop loops in the flows --> Uses an ordering values for all nodes
+#     # # --> The order values should only increase on the path --> A decrease in order value == a loop (X)
+#     # M = len(nodes)
+#     # m.addConstrs(
+#     #     (
+#     #         o[nodes.index(l.n2), idx_d, t] >= o[nodes.index(l.n1), idx_d, t] + 1 - M * (1 - z[idx_l, idx_d, t])
+#     #         for idx_l, l in enumerate(links)
+#     #         for idx_d, d in enumerate(demands)
+#     #         for t        in syst.T
+#     #     ), name="ordering_constraint_1"
+#     # )
+#     # m.addConstrs(
+#     #     (
+#     #         o[nodes.index(d.n1), idx_d, t] == 1
+#     #         for idx_d, d in enumerate(demands)
+#     #         for t        in syst.T
+#     #     ), name="ordering_constraint_2"
+#     # )
+#     # m.addConstrs(
+#     #     (
+#     #         o[nodes.index(d.n2), idx_d, t] == M
+#     #         for idx_d, d in enumerate(demands)
+#     #         for t        in syst.T
+#     #     ), name="ordering_constraint_2"
+#     # )
+    
+#     # Demand-level and link-level key rate coordination (Note that r_h is a part of the maximization objective)
+#     m.addConstrs(
+#         (r_h[idx_d, t] >= r_1[idx_l, idx_d, t]
+#          for idx_l, l in enumerate(links)
+#          for idx_d, d in enumerate(demands)
+#          for t in syst.T),
+#         name="demand_link_coordination_1"
+#     )
+
+#     # Key rate and routing coordination (1)
+#     m.addConstrs(
+#         (r_1[idx_l, idx_d, t] >= 1 * z[idx_l, idx_d, t]
+#          for idx_l, l in enumerate(links)
+#          for idx_d, d in enumerate(demands)
+#          for t in syst.T),
+#         name="key_rate_routing_coordination_1"
+#     )
+
+#     # Key rate and routing coordination (2)
+#     # We do not limit r_1 to d.K_REQ to enforce the optimal placement as well as demand satisfaction.
+#     # Note that l.K_MAX[t] is not a fixed value in this problem.
+#     m.addConstrs(
+#         (r_1[idx_l, idx_d, t] <= kz[idx_l, t]
+#          for idx_l, l in enumerate(links)
+#          for idx_d, d in enumerate(demands)
+#          for t in syst.T),
+#         name="key_rate_routing_coordination_2"
+#     )
+
+#     ########### Exclusive constraints ###########
+
+#     # Active link check
+#     m.addConstrs(
+#         (
+#             kz[idx_l, t] <= k[idx_l, t]
+#             for idx_l, l in enumerate(links)
+#             for t in syst.T
+#         ), name="keyrate_active_link_1"
+#     )
+
+#     m.addConstrs(
+#         (
+#             kz[idx_l, t] <= 1e7 * gp.quicksum(z[idx_l, idx_d, t]
+#                                                for idx_d, d in enumerate(demands)
+#                                               )
+#             for idx_l, l in enumerate(links)
+#             for t in syst.T
+#         ), name="keyrate_active_link_2"
+#     )
+
+#     m.addConstrs(
+#         (
+#             kz[idx_l, t] >= k[idx_l, t] - 1e7 * (1 - gp.quicksum(z[idx_l, idx_d, t]
+#                                                                   for idx_d, d in enumerate(demands)
+#                                                                  )
+#                                                  )
+#             for idx_l, l in enumerate(links)
+#             for t in syst.T
+#         ), name="keyrate_active_link_3"
+#     )
+
+#     m.addConstrs(
+#         (c1[idx_h, t] == c1_list_ref[t] + (c1[idx_h, 0] - c1_list_ref[0])
+#          for idx_h, h in enumerate(haps)
+#          for t in syst.T if t >= 1),
+#         name="shift_trajectory_1"
+#     )
+
+#     m.addConstrs(
+#         (c2[idx_h, t] == c2_list_ref[t] + (c2[idx_h, 0] - c2_list_ref[0])
+#          for idx_h, h in enumerate(haps)
+#          for t in syst.T if t >= 1),
+#         name="shift_trajectory_2"
+#     )
+
+#     # For each link l = (hap, gs), add the SOCP constraint tying d to (c1,c2,c3)
+#     for idx_l, l in enumerate(links):
+#         # identify which endpoint is HAP and which is GS
+#         if isinstance(l.n1, hap) and isinstance(l.n2, gs):
+#             hap_idx, gs_node = haps.index(l.n1), l.n2
+#         elif isinstance(l.n2, hap) and isinstance(l.n1, gs):
+#             hap_idx, gs_node = haps.index(l.n2), l.n1
+
+#         [cg1, cg2] = latlon_to_tangent(gs_node.lg, gs_node.la, 279, 49)
+
+#         for t in syst.T:
+#             dx = c1[hap_idx, t] - cg1*COORDINATE_SCALE
+#             dy = c2[hap_idx, t] - cg2*COORDINATE_SCALE
+#             m.addQConstr(d[idx_l, t]*d[idx_l, t] >= dx*dx + dy*dy + haps[hap_idx].H[t]*haps[hap_idx].H[t]*COORDINATE_SCALE*COORDINATE_SCALE,
+#                          name=f"dist_cone_{idx_l}_{t}")
+                         
+#     ## Solve
+#     m.optimize()
+
+#     if m.status == GRB.OPTIMAL:
+#         print("\n=========== OPTIMAL SOLUTION FOUND ===========")
+
+#         solution = {
+#             "r_h":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_h.items()},
+#             "r_1":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_1.items()},
+#             "z":   {k: v.X for k, v in z.items()},
+#             #"o":   {k: round(v.X, 3) for k, v in o.items()},
+#             "kz":  {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in kz.items()},
+#             "k":   {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in k.items()},
+#             "d":   {k: round(v.X / COORDINATE_SCALE, 3) for k, v in d.items()},
+#             "c1":  {k: round(v.X / COORDINATE_SCALE, 3) for k, v in c1.items()},
+#             "c2":  {k: round(v.X / COORDINATE_SCALE, 3) for k, v in c2.items()}
+#         }
+
+#         key_rate_m = min(solution["k"][idx_l, t]
+#                          for idx_l, l in enumerate(links)
+#                          for t in syst.T
+#                         )
+#         #key_rate_s = sum(solution["k"])
+        
+#         print(f"Minimum link key rate: {key_rate_m}") #, Sum: {key_rate_s}")
+
+#         for idx_l, l in enumerate(links):
+#             for idx_d, d in enumerate(demands):
+#                 Z = sum(solution["z"][idx_l, idx_d, t]
+#                         for t in syst.T
+#                        )
+#                 if Z > 0:
+#                     print(f"SELECTED: link.n1: {l.n1.tag}, link.n2: {l.n2.tag}")
+                    
+#         plot_z_timeline(solution["z"], links, demands, figsize=(10,6))
+        
+#         # pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
+#         # pp.pprint(solution)
+
+#         # Actual HAP trajectories
+#         actual_lons = [hnode.lg for hnode in haps]
+#         actual_lats = [hnode.la for hnode in haps]
+#         actual_labels = [f"HAP_{idx_hnode}_actual" for idx_hnode, _ in enumerate(haps)]
+        
+#         # Planned HAP trajectories
+#         planned_lons = []
+#         planned_lats = []
+#         for idx_hnode in range(len(haps)):
+#             lon_series = []
+#             lat_series = []
+#             for t in syst.T:
+#                 x = solution["c1"].get((idx_hnode,t))
+#                 y = solution["c2"].get((idx_hnode,t))
+#                 if x is not None and y is not None:
+#                     # lon, lat = xy_to_lonlat(x, y)
+#                     lon, lat = tangent_to_latlon(x, y, 279, 49)
+#                     lon_series.append(lon)   # shift if needed
+#                     lat_series.append(lat)
+#             planned_lons.append(lon_series)
+#             planned_lats.append(lat_series)
+#         planned_labels = [f"HAP_{idx_hnode}*" for idx_hnode in range(len(haps))]
+        
+#         # Ground Stations (replicate coordinates across all T so they plot in animation)
+#         gs_lons = []
+#         gs_lats = []
+#         for gnode in gss:
+#             gs_lons.append([gnode.lg] * len(syst.T))   # repeat longitude for all time steps
+#             gs_lats.append([gnode.la] * len(syst.T))   # repeat latitude for all time steps
+#         gs_labels = [f"GS_{idx_gs}" for idx_gs, _ in enumerate(gss)]
+
+#         all_lons = planned_lons + gs_lons
+#         all_lats = planned_lats + gs_lats
+#         all_labels = planned_labels + gs_labels
+
+#         plot_connectivity_graph_planning(gss, haps, links, 
+#                         planned_lons=planned_lons,
+#                         planned_lats=planned_lats,
+#                         planned_labels=planned_labels)
+
+#         plot_connectivity_graph_planning_3d(gss, haps, links, 
+#                         planned_lons=planned_lons,
+#                         planned_lats=planned_lats,
+#                         planned_labels=planned_labels)
+
+#         print(f"The minimum number of required HAPs: {num_h}")
+
+#         # return solution
+#     else:
+#         print(f"No optimal solution found for {num_h} HAPs.")
+#         solution = None
+
+#     return solution
+
 def plot_connectivity_graph_planning(gnodes, hnodes, links, 
                                     planned_lons=None, planned_lats=None, planned_labels=None):
     """
@@ -97,7 +1202,122 @@ def plot_connectivity_graph_planning(gnodes, hnodes, links,
     plt.savefig("hap_qkd_network_with_optimal.svg", format="svg", dpi=300, bbox_inches="tight")
     plt.show()
 
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D projection)
 
+
+def plot_connectivity_graph_planning_3d(gnodes, hnodes, links,
+                                        planned_lons=None, planned_lats=None, planned_alts=None,
+                                        planned_labels=None):
+    """
+    Plot 3D connectivity graph of GS and HAP nodes, with optional planned 3D HAP trajectories.
+
+    Parameters:
+    -----------
+    gnodes : list
+        Ground stations with attributes 'la' (latitude), 'lg' (longitude), and optional 'tag'.
+        Altitude is assumed to be 0.
+    hnodes : list
+        HAP nodes with trajectory lists ('la', 'lg', 'H') and optional 'tag'.
+    links : list
+        Link objects with attributes 'n1', 'n2'.
+    planned_lons, planned_lats, planned_alts : list[list[float]], optional
+        Planned longitude, latitude, and altitude trajectories for each HAP (same order as hnodes).
+    planned_labels : list[str], optional
+        Labels for planned trajectories.
+    """
+
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # --- Plot GS nodes ---
+    for gs_node in gnodes:
+        ax.scatter(gs_node.lg, gs_node.la, 0, color='skyblue', s=80, zorder=5)
+        if hasattr(gs_node, 'tag'):
+            ax.text(gs_node.lg + 0.02, gs_node.la + 0.02, 0.05, gs_node.tag,
+                    fontsize=9, fontweight='bold')
+
+    # --- Plot HAP nodes (initial position) ---
+    for hap_node in hnodes:
+        ax.scatter(hap_node.lg[0], hap_node.la[0], hap_node.H[0],
+                   color='orange', s=35, zorder=6)
+        if hasattr(hap_node, 'tag'):
+            ax.text(hap_node.lg[0] + 0.02, hap_node.la[0] + 0.02, hap_node.H[0] + 0.1,
+                    hap_node.tag, fontsize=9, fontweight='bold')
+
+    # --- Plot edges (from GS to HAPs, or between nodes) ---
+    plotted_edges = set()
+    for l in links:
+        edge_key = frozenset([l.n1, l.n2])
+        if edge_key in plotted_edges:
+            continue
+        plotted_edges.add(edge_key)
+
+        # Handle nodes with trajectory lists (use initial point)
+        x = [l.n1.lg[0] if isinstance(l.n1.lg, list) else l.n1.lg,
+             l.n2.lg[0] if isinstance(l.n2.lg, list) else l.n2.lg]
+        y = [l.n1.la[0] if isinstance(l.n1.la, list) else l.n1.la,
+             l.n2.la[0] if isinstance(l.n2.la, list) else l.n2.la]
+        z = [l.n1.H[0] if hasattr(l.n1, 'H') else 0,
+             l.n2.H[0] if hasattr(l.n2, 'H') else 0]
+
+        ax.plot(x, y, z, color='grey', linestyle='--', alpha=0.6)
+
+    # --- Plot baseline HAP trajectories ---
+    for hap_node in hnodes:
+        ax.plot(hap_node.lg, hap_node.la, hap_node.H,
+                color='orange', linewidth=1.5, alpha=0.8)
+
+    # --- Plot optimal trajectories (if provided) ---
+    if planned_lons and planned_lats and planned_alts:
+        for idx, (plon, plat, palt) in enumerate(zip(planned_lons, planned_lats, planned_alts)):
+            if len(plon) == 0 or len(plat) == 0 or len(palt) == 0:
+                continue
+
+            label = (planned_labels[idx] if planned_labels and idx < len(planned_labels)
+                     else f"Optimal_{idx}")
+
+            # Plot trajectory
+            ax.plot(plon, plat, palt, color='red', linewidth=1.8, alpha=0.9)
+
+            # Mark initial point
+            ax.scatter(plon[0], plat[0], palt[0], color='red', s=35, marker='o', zorder=6)
+
+            # Label near last planned point
+            lon_last, lat_last, alt_last = plon[-1], plat[-1], palt[-1]
+            coord_text = f"{label}\n({lon_last:.2f}, {lat_last:.2f}, {alt_last:.1f})"
+            ax.text(lon_last - 0.3, lat_last + 0.05, alt_last + 0.2,
+                    coord_text, fontsize=9, fontstyle='italic',
+                    fontweight='bold', color='red')
+
+    # --- Axis setup ---
+    all_lons = [gs.lg for gs in gnodes] + [hap.lg[0] for hap in hnodes]
+    all_lats = [gs.la for gs in gnodes] + [hap.la[0] for hap in hnodes]
+    all_alts = [0] + [hap.H[0] for hap in hnodes]
+
+    ax.set_xlabel("Longitude", fontsize=11, labelpad=10)
+    ax.set_ylabel("Latitude", fontsize=11, labelpad=10)
+    ax.set_zlabel("Altitude (km)", fontsize=11, labelpad=10)
+
+    ax.set_xlim(min(all_lons) - 0.1, max(all_lons) + 0.7)
+    ax.set_ylim(min(all_lats) - 0.1, max(all_lats) + 0.1)
+    ax.set_zlim(min(all_alts) - 0.5, max(all_alts) + 1)
+
+    # --- Legend ---
+    custom_handles = [
+        Line2D([], [], marker='o', color='skyblue', linestyle='None', markersize=6, label='GS'),
+        Line2D([], [], marker='o', color='orange', linestyle='None', markersize=6, label='HAP (Baseline)'),
+        Line2D([], [], marker='o', color='red', linestyle='None', markersize=6, label='HAP (Optimal)')
+    ]
+    ax.legend(handles=custom_handles, loc='upper left', frameon=True)
+
+    # --- Final layout ---
+    ax.grid(True, alpha=0.3)
+    ax.view_init(elev=25, azim=-60)  # good default viewing angle
+    plt.tight_layout()
+    plt.savefig("hap_qkd_network_with_optimal_3d.svg", format="svg", dpi=300, bbox_inches="tight")
+    plt.show()
 
 def calculate_key_rate_planning(method, link, d_los, t):
     K_MAX = 0
@@ -220,421 +1440,6 @@ def plot_z_timeline(z, links, demands, figsize=(10,6)):
     plt.title("Link Utilization Timeline by Demand (z variables)", fontsize=12, fontweight='bold')
     plt.tight_layout()
     plt.show()
-
-## problem: "FIXED", "INIT"
-## For a given set of demands what is the minimum number of HAPs and where to place them to satisfy all the demands.
-def demand_feasibility(problem, gss, demands):
-    MAX_HAPS = 10
-    c1_list_ref, c2_list_ref, c3_list_ref = [], [], []
-    lon0, lat0 = 279, 49
-
-    for num_h in range(1, MAX_HAPS):
-        haps = []
-        links = []
-
-        # Create Optimization Model
-        m = gp.Model("hap-qkd")
-
-        for n in range(num_h):
-            haps.append(hap([279]*len(syst.T), [49]*len(syst.T), [15]*len(syst.T), 1, 1, 1e9, f"HAP_{n}"))
-
-        # Update coordinates depending on model choice
-        if SYNTH_STRATO == 1:
-            update_coordinates("stratotegic", haps, syst)
-        else:
-            update_coordinates("wind", haps, syst)
-
-        ## Only once is enough
-        if num_h == 1:
-            for lon, lat in zip(haps[0].lg, haps[0].la):
-                c1, c2 = latlon_to_tangent(lon, lat, lon0, lat0)
-                c1_list_ref.append(c1)
-                c2_list_ref.append(c2)
-            c3_list_ref = haps[0].H
-
-            # print(f"haps[0].lg: {haps[0].lg}")
-            # print(f"haps[0].la: {haps[0].la}")
-            # print(f"c1_list_ref: {c1_list_ref}")
-            # print(f"c2_list_ref: {c2_list_ref}")
-            # print(f"c3_list_ref: {c3_list_ref}")
-
-        # Links: connect only GSs to HAPs
-        for gs_node in gss:
-            for hap_node in haps:
-                links.append(link(gs_node, hap_node, [100]*len(syst.T), [(0,0,0)]*len(syst.T), [1]*len(syst.T)))
-                links.append(link(hap_node, gs_node, [100]*len(syst.T), [(0,0,0)]*len(syst.T), [1]*len(syst.T)))
-
-        ## Decision Variables
-        # Dictionaries of decision variables instead of MVar arrays
-        r_1, r_2, r_h, a, z, o = {}, {}, {}, {}, {}, {}
-
-        for idx_l, l in enumerate(links):
-            for idx_d, d in enumerate(demands):
-                for t in syst.T:
-                    r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
-                    r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
-                    z[idx_l, idx_d, t] = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}", vtype=GRB.BINARY)
-
-        for idx_d, d in enumerate(demands):
-            for t in syst.T:
-                r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
-
-        for idx_l, l in enumerate(links):
-            for t in syst.T:
-                a[idx_l, t] = m.addVar(name=f"a_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
-
-        nodes = gss + haps
-
-        ## Node order variable --> To prevent subtours
-        for idx_n, n in enumerate(nodes):
-            for idx_d, d in enumerate(demands):
-                for t in syst.T:
-                    o[idx_n, idx_d, t] = m.addVar(name=f"o_{idx_n}_{idx_d}_{t}", vtype=GRB.CONTINUOUS)
-
-        # k (key rate) and d (distance)
-        k, d, kz = {}, {}, {}
-        for idx_l, l in enumerate(links):
-            for t in syst.T:
-                d[idx_l, t] = m.addVar(name=f"d_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=15 * COORDINATE_SCALE, ub=2e2 * COORDINATE_SCALE) # LoS distance (Min height in strat.)
-                    
-                k[idx_l, t] = m.addVar(name=f"k_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
-                kz[idx_l, t] = m.addVar(name=f"kz_{idx_l}_{t}", vtype=GRB.CONTINUOUS, lb=0.0)
-
-                dpts = np.linspace(15 * COORDINATE_SCALE, 2e2 * COORDINATE_SCALE, 4)
-                kpts = [calculate_key_rate_planning("plob", 0, d/COORDINATE_SCALE, t) * KEY_RATE_SCALE for d in dpts]
-
-                #print(f"kpts: {kpts}")
-                m.addGenConstrPWL(d[idx_l, t], k[idx_l, t], dpts, kpts, name=f"pwl_key_rate_{idx_l}_{t}")
-
-        # Coordinate decision variables for each HAP and time
-        c1, c2 = {}, {}  # x, y in km
-        for idx_h, hnode in enumerate(haps):
-            for t in syst.T:
-                c1[idx_h, t] = m.addVar(lb=-1e2*COORDINATE_SCALE, ub=1e2*COORDINATE_SCALE, vtype=GRB.CONTINUOUS, name=f"c1_{idx_h}_{t}")
-                c2[idx_h, t] = m.addVar(lb=-1e2*COORDINATE_SCALE, ub=1e2*COORDINATE_SCALE, vtype=GRB.CONTINUOUS, name=f"c2_{idx_h}_{t}")
-
-        # Secondary objective: maximize d
-        m.setObjective(gp.quicksum(gp.quicksum(r_h[idx_d, t] for idx_d, d in enumerate(demands)) for t in syst.T), GRB.MAXIMIZE)
-
-        m.setParam("MIPGap", 1e-2)
-        m.setParam("MIPGapAbs", 1e-2)
-        m.setParam("FeasibilityTol", 1e-2)
-        m.setParam("IntFeasTol", 1e-2)
-        m.setParam("OptimalityTol", 1e-2)
-        m.Params.Presolve = 2
-        m.Params.Method = 2
-        m.Params.Cuts = 2
-        m.Params.Heuristics = 0.25
-        m.Params.MIPFocus = 1
-        m.Params.NumericFocus = 1
-        m.Params.Threads = 0
-        m.Params.NodefileStart = 0.5
-        m.Params.NoRelHeurTime = 20
-        m.Params.ConcurrentMIP = 1
-
-        ## Constraints
-        m.addConstrs(
-            (r_h[idx_d, t] >= r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
-             for idx_l, l in enumerate(links)
-             for idx_d, d in enumerate(demands)
-             for t in syst.T),
-            name="demand_link_coordination_1"
-        )
-
-        m.addConstrs(
-            (gp.quicksum(r_h[idx_d, t] for t in syst.T) >= sum(d.K_REQ[t] for t in syst.T) * KEY_RATE_SCALE
-             for idx_d, d in enumerate(demands)),
-            name="demand_satisfaction_guarantee"
-        )
-
-        m.addConstrs(
-            (gp.quicksum(r_1[idx_l, idx_d, t] for idx_d, d in enumerate(demands)) <= k[idx_l, t]
-             for idx_l, l in enumerate(links)
-             for t in syst.T),
-            name="max_key_rate"
-        )
-
-        m.addConstrs(
-            (
-                kz[idx_l, t] <= k[idx_l, t]
-                for idx_l, l in enumerate(links)
-                for t in syst.T
-            ), name="keyrate_active_link_1"
-        )
-
-        m.addConstrs(
-            (
-                kz[idx_l, t] <= 1e10 * gp.quicksum(z[idx_l, idx_d, t]
-                                                   for idx_d, d in enumerate(demands)
-                                                  )
-                for idx_l, l in enumerate(links)
-                for t in syst.T
-            ), name="keyrate_active_link_2"
-        )
-
-        m.addConstrs(
-            (
-                kz[idx_l, t] >= k[idx_l, t] - 1e10 * (1 - gp.quicksum(z[idx_l, idx_d, t]
-                                                                      for idx_d, d in enumerate(demands)
-                                                                     )
-                                                     )
-                for idx_l, l in enumerate(links)
-                for t in syst.T
-            ), name="keyrate_active_link_3"
-        )
-
-        m.addConstrs(
-            (r_1[idx_l, idx_d, t] >= 1e-1 * z[idx_l, idx_d, t]
-             for idx_l, l in enumerate(links)
-             for idx_d, d in enumerate(demands)
-             for t in syst.T),
-            name="demand_link_coordination_1"
-        )
-
-        m.addConstrs(
-            (r_1[idx_l, idx_d, t] <= d.K_REQ[t] * KEY_RATE_SCALE * z[idx_l, idx_d, t]
-             for idx_l, l in enumerate(links)
-             for idx_d, d in enumerate(demands)
-             for t in syst.T),
-            name="key_rate_routing_coordination_2"
-        )
-
-        # Flow conservation
-        m.addConstrs(
-            (gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
-                         for idx_l, l in enumerate(links)
-                         if isinstance(l.n1, gs)
-                         if gss.index(l.n1) == gss.index(d.n1))
-             - gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
-                           for idx_l, l in enumerate(links)
-                           if isinstance(l.n2, gs)
-                           if gss.index(l.n2) == gss.index(d.n1))
-             == r_h[idx_d, t]
-             for idx_d, d in enumerate(demands)
-             for t in syst.T),
-            name="flow_conservation_1"
-        )
-
-        m.addConstrs(
-            (gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
-                         for idx_l, l in enumerate(links)
-                         if isinstance(l.n2, gs)
-                         if gss.index(l.n2) == gss.index(d.n2))
-             - gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
-                           for idx_l, l in enumerate(links)
-                           if isinstance(l.n1, gs)
-                           if gss.index(l.n1) == gss.index(d.n2))
-             == r_h[idx_d, t]
-             for idx_d, d in enumerate(demands)
-             for t in syst.T),
-            name="flow_conservation_2"
-        )
-
-        m.addConstrs(
-            (gp.quicksum((r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]) * (l.n1 == n)
-                         for idx_l, l in enumerate(links))
-             - gp.quicksum((r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]) * (l.n2 == n)
-                           for idx_l, l in enumerate(links))
-             == 0
-             for idx_d, d in enumerate(demands)
-             for n in gss + haps
-             if n != d.n1 and n != d.n2
-             for t in syst.T),
-            name="flow_conservation_3"
-        )
-
-        # MTZ subtour elimination --> Eliminates pointless single/multi-hop loops in the flows --> Uses an ordering values for all nodes
-        # --> The order values should only increase on the path --> A decrease in order value == a loop (X)
-        M = len(nodes)
-        m.addConstrs(
-            (
-                o[nodes.index(l.n2), idx_d, t] >= o[nodes.index(l.n1), idx_d, t] + 1 - M * (1 - z[idx_l, idx_d, t])
-                for idx_l, l in enumerate(links)
-                for idx_d, d in enumerate(demands)
-                for t        in syst.T
-            ), name="ordering_constraint_1"
-        )
-        m.addConstrs(
-            (
-                o[nodes.index(d.n1), idx_d, t] == 1
-                for idx_d, d in enumerate(demands)
-                for t        in syst.T
-            ), name="ordering_constraint_2"
-        )
-        m.addConstrs(
-            (
-                o[nodes.index(d.n2), idx_d, t] == M
-                for idx_d, d in enumerate(demands)
-                for t        in syst.T
-            ), name="ordering_constraint_2"
-        )
-
-        # Maximum Tx/Rx Connection
-        m.addConstrs(
-            (gp.quicksum(z[idx_l, idx_d, t]
-                         for idx_l, l in enumerate(links)
-                         for idx_d, d in enumerate(demands)
-                         if l.n1 == n
-                        ) <= n.N_TX
-             for idx_n, n in enumerate(nodes)
-             for t in syst.T),
-            name="max_tx_connections"
-        )
-
-        m.addConstrs(
-            (gp.quicksum(z[idx_l, idx_d, t]
-                         for idx_l, l in enumerate(links)
-                         for idx_d, d in enumerate(demands)
-                         if l.n2 == n
-                        ) <= n.N_RX
-             for idx_n, n in enumerate(nodes)
-             for t in syst.T),
-            name="max_rx_connections"
-        )
-
-        # QKP on HAPs and GSs
-        m.addConstrs(
-            (gp.quicksum(a[idx_l, tp] for tp in range(t-1))
-             >= syst.THETA * gp.quicksum(r_2[idx_l, idx_d, t] for idx_d, d in enumerate(demands)) * STORAGE_SCALE
-             for idx_l, l in enumerate(links)
-             for t in syst.T[1:]),
-            name="qkp_min_capacity"
-        )
-
-        m.addConstrs(
-            (r_2[idx_l, idx_d, 0] == 0
-             for idx_l, l in enumerate(links)
-             for idx_d, d in enumerate(demands)),
-            name="initial_empty_QKP"
-        )
-
-        m.addConstrs(
-            (a[idx_l, t] == syst.THETA * (kz[idx_l, t] * KEY_RATE_SCALE
-                                          - gp.quicksum(r_1[idx_l, idx_d, t] + r_2[idx_l, idx_d, t]
-                                                        for idx_d, d in enumerate(demands))) * STORAGE_SCALE
-             for idx_l, l in enumerate(links)
-             for t in syst.T),
-            name="qkp_sequence"
-        )
-
-        m.addConstrs(
-            (c1[idx_h, t] == c1_list_ref[t] + (c1[idx_h, 0] - c1_list_ref[0])
-             for idx_h, h in enumerate(haps)
-             for t in syst.T if t >= 1),
-            name="shift_trajectory_1"
-        )
-
-        m.addConstrs(
-            (c2[idx_h, t] == c2_list_ref[t] + (c2[idx_h, 0] - c2_list_ref[0])
-             for idx_h, h in enumerate(haps)
-             for t in syst.T if t >= 1),
-            name="shift_trajectory_2"
-        )
-
-        # For each link l = (hap, gs), add the SOCP constraint tying d to (c1,c2,c3)
-        for idx_l, l in enumerate(links):
-            # identify which endpoint is HAP and which is GS
-            if isinstance(l.n1, hap) and isinstance(l.n2, gs):
-                hap_idx, gs_node = haps.index(l.n1), l.n2
-            elif isinstance(l.n2, hap) and isinstance(l.n1, gs):
-                hap_idx, gs_node = haps.index(l.n2), l.n1
-
-            [cg1, cg2] = latlon_to_tangent(gs_node.lg, gs_node.la, 279, 49)
-
-            for t in syst.T:
-                dx = c1[hap_idx, t] - cg1*COORDINATE_SCALE
-                dy = c2[hap_idx, t] - cg2*COORDINATE_SCALE
-                m.addQConstr(d[idx_l, t]*d[idx_l, t] >= dx*dx + dy*dy + c3_list_ref[t]*c3_list_ref[t]*COORDINATE_SCALE*COORDINATE_SCALE,
-                             name=f"dist_cone_{idx_l}_{t}")
-
-        ## Solve
-        m.optimize()
-
-        if m.status == GRB.OPTIMAL:
-            print("\n=========== OPTIMAL SOLUTION FOUND ===========")
-    
-            solution = {
-                "r_h":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_h.items()},
-                "r_1":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_1.items()},
-                "r_2":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in r_2.items()},
-                "a":   {k: round(v.X / KEY_RATE_SCALE, 3) for k, v in a.items()},
-                "z":   {k: v.X for k, v in z.items()},
-                "kz":  {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in kz.items()},
-                "k":   {k: round(v.X / KEY_RATE_SCALE / STORAGE_SCALE, 3) for k, v in k.items()},
-                "d":   {k: round(v.X / COORDINATE_SCALE, 3) for k, v in d.items()},
-                "c1":  {k: round(v.X / COORDINATE_SCALE, 3) for k, v in c1.items()},
-                "c2":  {k: round(v.X / COORDINATE_SCALE, 3) for k, v in c2.items()}
-            }
-
-            key_rate_m = min(solution["k"][idx_l, t]
-                             for idx_l, l in enumerate(links)
-                             for t in syst.T
-                            )
-            #key_rate_s = sum(solution["k"])
-            
-            print(f"Minimum link key rate: {key_rate_m}") #, Sum: {key_rate_s}")
-
-            for idx_l, l in enumerate(links):
-                for idx_d, d in enumerate(demands):
-                    Z = sum(solution["z"][idx_l, idx_d, t]
-                            for t in syst.T
-                           )
-                    if Z > 0:
-                        print(f"SELECTED: link.n1: {l.n1.tag}, link.n2: {l.n2.tag}")
-                        
-            plot_z_timeline(solution["z"], links, demands, figsize=(10,6))
-            
-            pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
-            pp.pprint(solution)
-    
-            # Actual HAP trajectories
-            actual_lons = [hnode.lg for hnode in haps]
-            actual_lats = [hnode.la for hnode in haps]
-            actual_labels = [f"HAP_{idx_hnode}_actual" for idx_hnode, _ in enumerate(haps)]
-            
-            # Planned HAP trajectories
-            planned_lons = []
-            planned_lats = []
-            for idx_hnode in range(len(haps)):
-                lon_series = []
-                lat_series = []
-                for t in syst.T:
-                    x = solution["c1"].get((idx_hnode,t))
-                    y = solution["c2"].get((idx_hnode,t))
-                    if x is not None and y is not None:
-                        # lon, lat = xy_to_lonlat(x, y)
-                        lon, lat = tangent_to_latlon(x, y, 279, 49)
-                        lon_series.append(lon)   # shift if needed
-                        lat_series.append(lat)
-                planned_lons.append(lon_series)
-                planned_lats.append(lat_series)
-            planned_labels = [f"HAP_{idx_hnode}*" for idx_hnode in range(len(haps))]
-            
-            # Ground Stations (replicate coordinates across all T so they plot in animation)
-            gs_lons = []
-            gs_lats = []
-            for gnode in gss:
-                gs_lons.append([gnode.lg] * len(syst.T))   # repeat longitude for all time steps
-                gs_lats.append([gnode.la] * len(syst.T))   # repeat latitude for all time steps
-            gs_labels = [f"GS_{idx_gs}" for idx_gs, _ in enumerate(gss)]
-    
-            all_lons = planned_lons + gs_lons
-            all_lats = planned_lats + gs_lats
-            all_labels = planned_labels + gs_labels
-    
-            plot_connectivity_graph_planning(gss, haps, links, 
-                            planned_lons=planned_lons,
-                            planned_lats=planned_lats,
-                            planned_labels=planned_labels)
-
-            print(f"The minimum number of required HAPs: {num_h}")
-
-            # return solution
-        else:
-            print(f"No optimal solution found for {num_h} HAPs.")
-            solution = None
-
-    return solution
 
 
 
