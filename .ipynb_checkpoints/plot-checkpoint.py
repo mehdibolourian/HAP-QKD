@@ -586,16 +586,16 @@ def plot_connectivity_graph(gnodes, hnodes, links):
     
     # --- Plot GS nodes ---
     for gs_node in gnodes:
-        plt.scatter(gs_node.lg, gs_node.la, color='skyblue', s=80, zorder=5)
+        plt.scatter(gs_node.lg, gs_node.la, color='skyblue', s=80, zorder=5, marker='^')
         # Optional: label the GS
         if hasattr(gs_node, 'tag'):
-            plt.text(gs_node.lg + 0.02, gs_node.la + 0.02, gs_node.tag, fontsize=9, fontweight='bold')
+            plt.text(gs_node.lg + 0.04, gs_node.la + 0.04, gs_node.tag, fontsize=9)
     
     # --- Plot HAP nodes (initial position) ---
     for hap_node in hnodes:
-        plt.scatter(hap_node.lg[0], hap_node.la[0], color='orange', s=30, zorder=5)
+        plt.scatter(hap_node.lg[0], hap_node.la[0], color='orange', s=5, zorder=5)
         if hasattr(hap_node, 'tag'):
-            plt.text(hap_node.lg[0] + 0.02, hap_node.la[0] + 0.02, hap_node.tag, fontsize=9, fontweight='bold')
+            plt.text(hap_node.lg[0] - 0.4, hap_node.la[0] - 0.2, hap_node.tag, fontsize=9)
     
     # --- Plot edges without duplicates ---
     plotted_edges = set()
@@ -613,30 +613,68 @@ def plot_connectivity_graph(gnodes, hnodes, links):
              l.n2.la[0] if isinstance(l.n2.la, list) else l.n2.la]
         
         # Decide line style
-        plt.plot(x, y, color='grey', linestyle='--', alpha=0.7)
+        plt.plot(x, y, color='grey', linestyle='--', alpha=0.6, linewidth=0.5)
     
     # --- Plot HAP trajectories ---
     for hap_node in hnodes:
-        plt.plot(hap_node.lg, hap_node.la, color='orange', linewidth=1.5, alpha=0.8)
+        plt.plot(hap_node.lg, hap_node.la, color='orange', linewidth=2, alpha=0.8)
+    
     
     # --- Axis labels and limits ---
     all_lons = [gs.lg for gs in gnodes] + [hap.lg[0] for hap in hnodes]
     all_lats = [gs.la for gs in gnodes] + [hap.la[0] for hap in hnodes]
-    plt.xlabel("Longitude", fontsize=11)
-    plt.ylabel("Latitude", fontsize=11)
-    plt.xlim(min(all_lons) - 0.1, max(all_lons) + 0.7)
-    plt.ylim(min(all_lats) - 0.1, max(all_lats) + 0.1)
-    plt.xticks(fontsize=10)
-    plt.yticks(fontsize=10)
+    plt.xlabel("Longitude", fontsize=13)
+    plt.ylabel("Latitude", fontsize=13)
+    plt.xlim(min(all_lons) - 0.2, max(all_lons) + 1.5)
+    plt.ylim(min(all_lats) - 0.2, max(all_lats) + 0.2)
+    plt.xticks(fontsize=13)
+    plt.yticks(fontsize=13)
     
     # --- Legend ---
     custom_handles = [
-        Line2D([], [], marker='o', color='skyblue', linestyle='None', markersize=6, label='GS'),
+        Line2D([], [], marker='^', color='skyblue', linestyle='None', markersize=6, label='GS'),
         Line2D([], [], marker='o', color='orange', linestyle='None', markersize=6, label='HAP')
     ]
-    plt.legend(handles=custom_handles, loc='best', frameon=True)
+    plt.legend(handles=custom_handles, loc='best', frameon=True, fontsize=13)
     
     plt.grid(True, alpha=0.3)
+
+    # ==============================
+    # Zoomed-in inset for one HAP
+    # ==============================
+    hap_zoom = hnodes[0]   # choose which HAP to zoom
+
+    # Create inset axis
+    ax = plt.gca()
+    axins = inset_axes(
+        ax,
+        width="35%",   # relative size
+        height="35%",
+        loc="lower right",
+        borderpad=1.2
+    )
+
+    # Plot trajectory inside inset
+    axins.plot(hap_zoom.lg, hap_zoom.la,
+               color='orange', linewidth=2)
+
+    # Optional: mark start point
+    axins.scatter(hap_zoom.lg[0], hap_zoom.la[0],
+                  color='orange', s=2, zorder=5)
+
+    # Set zoom window (tight bounds)
+    margin = 0.05
+    axins.set_xlim(min(hap_zoom.lg) - margin, max(hap_zoom.lg) + margin)
+    axins.set_ylim(min(hap_zoom.la) - margin, max(hap_zoom.la) + margin)
+
+    # Clean inset appearance
+    axins.set_xticks([])
+    axins.set_yticks([])
+    axins.grid(True, alpha=0.3)
+
+    # Draw rectangle on main plot to show zoomed region
+    mark_inset(ax, axins, loc1=2, loc2=4, fc="none", ec="0.5")
+    
     plt.savefig("hap_qkd_network.svg", format="svg", dpi=300, bbox_inches="tight")
     plt.show()
 

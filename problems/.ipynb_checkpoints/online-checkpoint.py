@@ -3,8 +3,10 @@ from libraries import *
 def online_new(gss, haps, links, state, action, t, f_qkp):
     demands = state[t]["demands"]
 
-    A       = [state[tp]["a"] for tp in range(t+1)]
+    A       = state[t]["a"]
     z       = action[t]
+
+    A_next  = A.copy()
 
     # print(f"z: {z}")
     # print(f"A: {A}")
@@ -34,12 +36,17 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
 
     nodes = gss + haps
 
-    ## Maximize total served keys
-    # Objective: maximize keys served
-    m.setObjective(sum(r_h[idx_d]
-                       for idx_d, d in enumerate(demands)
-                      ), GRB.MAXIMIZE
-                  )
+    m.ModelSense = GRB.MAXIMIZE
+
+    # Primary objective: maximize demand satisfaction
+    m.setObjectiveN(gp.quicksum(r_h[idx_d]
+                                for idx_d, d in enumerate(demands)
+                               ), index=0, priority=2, weight=1.0, abstol=1e-2, reltol=1e-2, name="Primary")
+    
+    # Secondary objective: maximize keys served
+    m.setObjectiveN(gp.quicksum(a[idx_l]
+                                for idx_l, l in enumerate(links)
+                               ), index=1, priority=1, weight=1.0, abstol=1e-2, reltol=1e-2, name="Secondary")
 
     ### Tuning the accuracy and convergence of the solver
     m.setParam("MIPGap", 1e-2)
@@ -132,7 +139,7 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
     # Key rate and routing coordination (2)
     m.addConstrs(
         (
-            r_1[idx_l, idx_d] <= d.K_REQ[t] * KEY_RATE_SCALE * z[idx_l, idx_d]
+            r_1[idx_l, idx_d] <= d.K_REQ[t] * KEY_RATE_SCALE * z[idx_l]
             for idx_l, l in enumerate(links)
             for idx_d, d in enumerate(demands)
         ), name="key_rate_routing_coordination_2"
@@ -152,9 +159,7 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         if t >= 1:
             m.addConstrs(
                 (
-                    sum(A[tp][idx_l]
-                        for tp in range(t+1)
-                       ) >= syst.THETA * gp.quicksum(r_2[idx_l, idx_d]
+                    A[idx_l] >= syst.THETA * gp.quicksum(r_2[idx_l, idx_d]
                                                      for idx_d, d in enumerate(demands)
                                                     ) * STORAGE_SCALE
                     for idx_l, l in enumerate(links)
@@ -163,9 +168,7 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         
         m.addConstrs(
             (
-                a[idx_l] == syst.THETA * (l.K_MAX[t] * max(z[idx_l, idx_d]
-                                                           for idx_d, d in enumerate(demands)
-                                                          ) * KEY_RATE_SCALE - gp.quicksum(r_1[idx_l, idx_d] + r_2[idx_l, idx_d]
+                a[idx_l] == syst.THETA * (l.K_MAX[t] * z[idx_l] * KEY_RATE_SCALE - gp.quicksum(r_1[idx_l, idx_d] + r_2[idx_l, idx_d]
                                                                                            for idx_d, d in enumerate(demands)
                                                                                           )
                                             ) * STORAGE_SCALE
@@ -175,9 +178,7 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
 
         m.addConstrs(
             (
-                sum(A[tp][idx_l]
-                    for tp in range(t+1)
-                   ) + a[idx_l] >= 0
+                A[idx_l] + a[idx_l] >= 0
                 for idx_l, l in enumerate(links)
             ), name="positive_storage"
         )
@@ -235,17 +236,20 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         Obj_REQ = sum(d.K_REQ[idx_d]
                      for idx_d, d in enumerate(demands)
                     )
-        if m.ObjVal < Obj_REQ:
-            reward = (m.ObjVal - Obj_REQ) / Obj_REQ
+        if m.ObjVal < 0.99 * Obj_REQ:
+            reward = m.ObjVal / Obj_REQ
         else:
             reward = 10
+
+        A_next = {k: A.get(k, 0) + solution_all["a"].get(k, 0)
+           for k in set(solution_all["a"])}
     else:
         #print("No optimal solution found.")
         solution_all = {
             "a": state[t]["a"].copy()
         }
         
-    return solution_all, reward
+    return solution_all, reward, A_next
 
 
 
