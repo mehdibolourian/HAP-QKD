@@ -1,197 +1,211 @@
 import math
 import numpy as np
 import netsquid as ns
+
 import balloon_qnet.transmittance as transmittance
-# from balloon_qnet.QEuropeFunctions import *
 from balloon_qnet.free_space_losses import (
     UplinkChannel,
     DownlinkChannel,
-    compute_channel_length,
     CachedChannel
 )
 from balloon_qnet.QEuropeFunctions import *
 
-# Parameters (you can adjust these)
-wavelength = 1550e-9
-ground_station_alt = 0 # 0.020
-obs_ratio_ground = 0.3
-obs_ratio_hap = 0.3
-Cn0 = 9.6e-14
-u_rms = 10
-pointing_error = 1e-6
-Qonnector_meas_succ = 0.85
-tracking_efficiency = 0.8
-rx_aperture_ground = 0.6 # 0.3
-rx_aperture_hap = 0.6 # 0.3
-W0 = 0.1
-simtime = 50000   # shorter for testing
+# ============================================================
+# Physical constants
+# ============================================================
 
-#Parameters and function to calculate the secret key rate
+RE = 6371.0  # Earth radius [km]
+
+# ============================================================
+# Channel & system parameters (paper-consistent)
+# ============================================================
+
+
+# "W0": 0.15,
+#     "rx_aperture_down": 1.0,
+#     "rx_aperture_up": 0.50,
+#     "pointing_error": 2e-6,
+#     "tracking_efficiency": 0.9,
+params = {
+    # Optical
+    "wavelength": 1550e-9,     # [m]
+    "W0": 0.15,                # Initial beam waist [m] (15 cm)
+    
+    # Apertures
+    "rx_aperture_down": 0.75,  # Ground station [m]
+    "rx_aperture_up": 0.40,    # HAP [m]
+    "obs_ratio": 0.3,
+
+    # Atmosphere & turbulence
+    "Cn0": 1e-13,            # [m^(-2/3)] "Cn0": 9.6e-14,            # [m^(-2/3)]
+    "u_rms": 10,           # [m/s]
+
+    # Pointing & tracking
+    "pointing_error": 1e-7,    # 1 μrad (paper)
+    "tracking_efficiency": 0.85,
+
+    # Detection
+    "detector_eff": 0.85,
+
+    # Netsquid
+    "init_time": 1
+}
+
+# ============================================================
+# BB84 / SKR parameters
+# ============================================================
+
 ratesources = 80e6
 sourceeff = 0.01
 QBER = 0.04
+simtime = 50_000
 
-params = {
-    "wavelength": 1550e-9,
-    "W0": 0.1,
-    "rx_aperture_down": 0.6,
-    "rx_aperture_up": 0.6,
-    "obs_ratio": 0.3,
-    "Cn0": 9.6e-14,
-    "u_rms": 10,
-    "pointing_error": 1e-6,
-    "tracking_efficiency": 0.8,
-    "detector_eff": 0.85,
-    "init_time": 1  # example value
-}
+# ============================================================
+# Geometry helpers (spherical Earth)
+# ============================================================
 
-# ---------------------------
-# Helper: compute zenith angle from LoS distance and balloon height
-# ---------------------------
-def compute_zenith_angle(gs_alt, balloon_alt, distance):
+def slant_range(gs_alt, hap_alt, zenith_angle_deg):
     """
-    Compute zenith angle (radians) given:
-      gs_alt: ground station altitude (km)
-      balloon_alt: balloon altitude (km)
-      distance: line-of-sight distance between ground and balloon (km)
+    Compute slant range using spherical Earth geometry.
+
+    gs_alt, hap_alt : km
+    zenith_angle_deg: degrees (at GS)
     """
-    vertical = balloon_alt - gs_alt
-    # Clamp to avoid invalid acos values
-    cos_theta = max(-1.0, min(1.0, vertical / distance))
-    return np.degrees(math.acos(cos_theta))
+    theta = np.radians(zenith_angle_deg)
+    RG = RE + gs_alt
+    RH = RE + hap_alt
+
+    return np.sqrt(
+        RH**2 + RG**2 * (np.cos(theta)**2 - 1) - RG * np.cos(theta)
+    )
 
 
-# ---------------------------
-# Theoretical mean efficiency
-# ---------------------------
-def channel_theory(direction, gs_alt, balloon_alt, distance, n_correction):
+def zenith_angle_from_distance(gs_alt, hap_alt, distance):
     """
-    direction: "uplink" or "downlink"
-    gs_alt: ground station altitude (km)
-    balloon_alt: balloon altitude (km)
-    distance: line-of-sight distance (km)
-    n_correction: AO system correction index
+    Inverse: compute zenith angle from slant distance.
     """
-    zenith_angle = compute_zenith_angle(gs_alt, balloon_alt, distance)
+    RG = RE + gs_alt
+    RH = RE + hap_alt
+    L = distance
 
-    Tatm = transmittance.slant(gs_alt, balloon_alt, params["wavelength"] * 1e9, zenith_angle)
+    cos_theta = -(RG**2 + L**2 - RH**2) / (2 * RG * L)
+    cos_theta = np.clip(cos_theta, -1.0, 1.0)
+    return np.degrees(np.arccos(cos_theta))
+
+# ============================================================
+# Theoretical mean channel efficiency
+# ============================================================
+
+def channel_theory(direction, gs_alt, hap_alt, distance, n_correction, params_in):
+    """
+    Compute theoretical mean channel efficiency.
+    """
+
+    zenith = zenith_angle_from_distance(gs_alt, hap_alt, distance)
+
+    Tatm = transmittance.slant(
+        gs_alt,
+        hap_alt,
+        params_in["wavelength"] * 1e9,
+        zenith
+    )
 
     if direction == "uplink":
         channel = UplinkChannel(
-            params["W0"], params["rx_aperture_up"], params["obs_ratio"],
-            n_correction, params["Cn0"], params["u_rms"],
-            params["wavelength"], gs_alt, balloon_alt, zenith_angle,
-            pointing_error=params["pointing_error"],
-            tracking_efficiency=params["tracking_efficiency"],
+            params_in["W0"],
+            params_in["rx_aperture_up"],
+            params_in["obs_ratio"],
+            n_correction,
+            params_in["Cn0"],
+            params_in["u_rms"],
+            params_in["wavelength"],
+            gs_alt,
+            hap_alt,
+            zenith,
+            pointing_error=params_in["pointing_error"],
+            tracking_efficiency=params_in["tracking_efficiency"],
             Tatm=Tatm
         )
+
     elif direction == "downlink":
         channel = DownlinkChannel(
-            params["W0"], params["rx_aperture_down"], params["obs_ratio"],
-            n_correction, params["Cn0"], params["u_rms"],
-            params["wavelength"], gs_alt, balloon_alt, zenith_angle,
-            pointing_error=params["pointing_error"],
-            tracking_efficiency=params["tracking_efficiency"],
+            params_in["W0"],
+            params_in["rx_aperture_down"],
+            params_in["obs_ratio"],
+            n_correction,
+            params_in["Cn0"],
+            params_in["u_rms"],
+            params_in["wavelength"],
+            gs_alt,
+            hap_alt,
+            zenith,
+            pointing_error=params_in["pointing_error"],
+            tracking_efficiency=params_in["tracking_efficiency"],
             Tatm=Tatm
         )
     else:
         raise ValueError("direction must be 'uplink' or 'downlink'")
 
-    eta = np.arange(1e-7, 1, 0.001)
-    mean = channel._compute_mean_channel_efficiency(
-        eta, distance, detector_efficiency=params["detector_eff"]
+    eta = np.arange(1e-7, 1.0, 1e-3)
+    mean_eta = channel._compute_mean_channel_efficiency(
+        eta,
+        distance,
+        detector_efficiency=params_in["detector_eff"]
     )
-    return mean
 
+    return mean_eta
 
-# ---------------------------
-# Simulated efficiency
-# ---------------------------
-# def channel_simulation(direction, gs_alt, balloon_alt, distance, n_correction, simtime=simtime):
-#     """
-#     direction: "uplink" or "downlink"
-#     gs_alt, balloon_alt, distance: geometry (km)
-#     params: dict of channel parameters
-#     n_correction: AO correction index
-#     simtime: number of channel uses to simulate
-#     """
-#     zenith_angle = compute_zenith_angle(0, balloon_alt, distance)
+# ============================================================
+# Monte Carlo channel simulation (NetSquid)
+# ============================================================
 
-#     Tatm = transmittance.slant(gs_alt, balloon_alt, params["wavelength"] * 1e9, zenith_angle)
-
-#     if direction == "uplink":
-#         channel = UplinkChannel(
-#             params["W0"], params["rx_aperture_up"], params["obs_ratio"],
-#             n_correction, params["Cn0"], params["u_rms"],
-#             params["wavelength"], gs_alt, balloon_alt, zenith_angle,
-#             pointing_error=params["pointing_error"],
-#             tracking_efficiency=params["tracking_efficiency"],
-#             Tatm=Tatm
-#         )
-#     elif direction == "downlink":
-#         channel = DownlinkChannel(
-#             params["W0"], params["rx_aperture_down"], params["obs_ratio"],
-#             n_correction, params["Cn0"], params["u_rms"],
-#             params["wavelength"], gs_alt, balloon_alt, zenith_angle,
-#             pointing_error=params["pointing_error"],
-#             tracking_efficiency=params["tracking_efficiency"],
-#             Tatm=Tatm
-#         )
-#     else:
-#         raise ValueError("direction must be 'uplink' or 'downlink'")
-
-#     # Simulate by sampling loss probabilities
-#     a = channel._compute_loss_probability(distance, math.ceil(simtime / params["init_time"]))
-
-#     # Channel efficiency = fraction of photons surviving
-#     efficiency = 1.0 - np.mean(a)  # or another stat depending on how a is defined
-    
-#     # Monte Carlo simulate
-#     # sent = simtime / params["init_time"]
-#     # received = np.random.binomial(sent, 1 - a.mean())  # approximate survival
-#     # efficiency = received / sent
-
-#     # print("a type:", type(a), "len:", len(a))
-#     # a = np.asarray(a)
-#     # print("a dtype:", a.dtype, "min,max,mean:", a.min(), a.max(), a.mean())
-#     # print("first 20:", a[:20])
-#     return efficiency
-
-def channel_simulation(direction, gs_alt, balloon_alt, distance, n_correction, simtime=simtime):
+def channel_simulation(direction, gs_alt, hap_alt, distance, n_correction):
     """
-    direction: "uplink" or "downlink"
-    gs_alt, balloon_alt, distance: geometry (km)
-    params: dict of channel parameters
-    n_correction: AO correction index
-    simtime: number of channel uses to simulate
+    Simulate BB84 over free-space HAP–GS channel.
     """
 
-    zenith_angle = compute_zenith_angle(0, balloon_alt, distance)
-    
-    # Compute channel parameters
-    Tatm = transmittance.slant(gs_alt, balloon_alt, params["wavelength"] * 1e9, zenith_angle)
+    zenith = zenith_angle_from_distance(gs_alt, hap_alt, distance)
+
+    Tatm = transmittance.slant(
+        gs_alt,
+        hap_alt,
+        params["wavelength"] * 1e9,
+        zenith
+    )
 
     # Initialize network
-    net = QEurope("EuropeNet")
-
-    # Add GS and HAP nodes
-    net.Add_Qonnector("QonnectorGS")
-    net.Add_Qonnector("QonnectorHAP")
+    net = QEurope("HAPNet")
+    net.Add_Qonnector("GS")
+    net.Add_Qonnector("HAP")
 
     if direction == "uplink":
         channel = UplinkChannel(
-            params["W0"], params["rx_aperture_up"], params["obs_ratio"],
-            n_correction, params["Cn0"], params["u_rms"],
-            params["wavelength"], gs_alt, balloon_alt, zenith_angle,
+            params["W0"],
+            params["rx_aperture_up"],
+            params["obs_ratio"],
+            n_correction,
+            params["Cn0"],
+            params["u_rms"],
+            params["wavelength"],
+            gs_alt,
+            hap_alt,
+            zenith,
             pointing_error=params["pointing_error"],
             tracking_efficiency=params["tracking_efficiency"],
             Tatm=Tatm
         )
     elif direction == "downlink":
         channel = DownlinkChannel(
-            params["W0"], params["rx_aperture_down"], params["obs_ratio"],
-            n_correction, params["Cn0"], params["u_rms"],
-            params["wavelength"], gs_alt, balloon_alt, zenith_angle,
+            params["W0"],
+            params["rx_aperture_down"],
+            params["obs_ratio"],
+            n_correction,
+            params["Cn0"],
+            params["u_rms"],
+            params["wavelength"],
+            gs_alt,
+            hap_alt,
+            zenith,
             pointing_error=params["pointing_error"],
             tracking_efficiency=params["tracking_efficiency"],
             Tatm=Tatm
@@ -199,242 +213,49 @@ def channel_simulation(direction, gs_alt, balloon_alt, distance, n_correction, s
     else:
         raise ValueError("direction must be 'uplink' or 'downlink'")
 
-    # Simulate by sampling loss probabilities
-    a = channel._compute_loss_probability(distance, math.ceil(simtime / params["init_time"]))
+    # Sample channel loss
+    loss_samples = channel._compute_loss_probability(
+        distance,
+        math.ceil(simtime / params["init_time"])
+    )
 
-    dulink = CachedChannel(a)
+    loss_model = CachedChannel(loss_samples)
 
-    # Connect GS ↔ HAP
-    net.connect_qonnectors("QonnectorGS", "QonnectorHAP", distance=balloon_alt, loss_model=dulink)
+    # Connect GS <-> HAP with correct distance
+    net.connect_qonnectors(
+        "GS",
+        "HAP",
+        distance=distance,
+        loss_model=loss_model
+    )
 
-    # Retrieve nodes
-    gs = net.network.get_node("QonnectorGS")
-    hap = net.network.get_node("QonnectorHAP")
+    gs = net.network.get_node("GS")
+    hap = net.network.get_node("HAP")
 
-    # BB84 protocol (GS receives, HAP sends)
     send = SendBB84(hap, Qonnector_init_succ, Qonnector_init_flip, gs)
+    recv = ReceiveProtocol(gs, params["detector_eff"], Qonnector_meas_flip, True, hap)
+
     send.start()
-    receive = ReceiveProtocol(gs, params["detector_eff"], Qonnector_meas_flip, True, hap)
-    receive.start()
+    recv.start()
 
-    # Run simulation
-    ns.sim_run(duration=simtime)
+    ns.sim_run(simtime)
 
-    # Post-processing
-    L1 = Sifting(gs.QlientKeys[hap.name], hap.QlientKeys[gs.name])
-    chan_eff = len(hap.QlientKeys[gs.name]) / len(gs.QlientKeys[hap.name])
+    sifted = Sifting(gs.QlientKeys[hap.name], hap.QlientKeys[gs.name])
+    efficiency = len(hap.QlientKeys[gs.name]) / max(1, len(gs.QlientKeys[hap.name]))
 
-    # if direction == "downlink":
-    #     print(f"[Downlink] Balloon Altitude: {balloon_alt} km, distance: {distance} km, AO: {n_correction}, Efficiency: {chan_eff:.4f}")
-    # else:
-    #     print(f"[Uplink] Balloon Altitude: {balloon_alt} km, distance: {distance} km, AO: {n_correction}, Efficiency: {chan_eff:.4f}")
-    
-    return chan_eff
+    return efficiency
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# def simulate_downlink(h_balloons, distance, n):
-#     """
-#     Simulate a downlink quantum channel from HAP (balloon) to Ground Station (GS).
-#     """
-
-#     zenith_angle = compute_zenith_angle(0, h_balloons, distance)
-    
-#     # Compute channel parameters
-#     height_balloon = compute_channel_length(ground_station_alt, h_balloons, zenith_angle)
-#     transmittance_down = transmittance.slant(ground_station_alt, h_balloons, wavelength*1e9, zenith_angle)
-
-#     # Initialize network
-#     net = QEurope("EuropeNet")
-
-#     # Add GS and HAP nodes
-#     net.Add_Qonnector("QonnectorGS")
-#     net.Add_Qonnector("QonnectorHAP")
-
-#     # Define downlink channel model
-#     downlink_channel = DownlinkChannel(
-#         W0, rx_aperture_ground, obs_ratio_ground, n, Cn0, u_rms,
-#         wavelength, ground_station_alt, h_balloons, zenith_angle,
-#         pointing_error=pointing_error,
-#         tracking_efficiency=tracking_efficiency,
-#         Tatm=transmittance_down
-#     )
-#     a = downlink_channel._compute_loss_probability(height_balloon, math.ceil(simtime/Qonnector_init_time))
-#     downlink = CachedChannel(a)
-
-#     # Connect GS ↔ HAP
-#     net.connect_qonnectors("QonnectorGS", "QonnectorHAP", distance=height_balloon, loss_model=downlink)
-
-#     # Retrieve nodes
-#     gs = net.network.get_node("QonnectorGS")
-#     hap = net.network.get_node("QonnectorHAP")
-
-#     # BB84 protocol (GS receives, HAP sends)
-#     send = SendBB84(hap, Qonnector_init_succ, Qonnector_init_flip, gs)
-#     send.start()
-#     receive = ReceiveProtocol(gs, Qonnector_meas_succ, Qonnector_meas_flip, True, hap)
-#     receive.start()
-
-#     # Run simulation
-#     ns.sim_run(duration=simtime)
-
-#     # Post-processing
-#     L1 = Sifting(gs.QlientKeys[hap.name], hap.QlientKeys[gs.name])
-#     chan_eff = len(hap.QlientKeys[gs.name]) / len(gs.QlientKeys[hap.name])
-
-#     print(f"[Downlink] Balloon Altitude: {h_balloons} km, AO: {n}, Efficiency: {chan_eff:.4f}")
-#     return chan_eff
-
-# def simulate_uplink(h_balloons, distance, n):
-#     """
-#     Simulate an uplink quantum channel from Ground Station (GS) to HAP (balloon).
-#     """
-
-#     zenith_angle = compute_zenith_angle(0, h_balloons, distance)
-    
-#     # Compute channel parameters
-#     height_balloon = compute_channel_length(ground_station_alt, h_balloons, zenith_angle)
-#     transmittance_up = transmittance.slant(ground_station_alt, h_balloons, wavelength*1e9, zenith_angle)
-
-#     # Initialize network
-#     net = QEurope("EuropeNet")
-
-#     # Add GS and HAP nodes
-#     net.Add_Qonnector("QonnectorGS")
-#     net.Add_Qonnector("QonnectorHAP")
-
-#     # Define uplink channel model
-#     uplink_channel = UplinkChannel(
-#         W0, rx_aperture_hap, obs_ratio_hap, n, Cn0, u_rms,
-#         wavelength, ground_station_alt, h_balloons, zenith_angle,
-#         pointing_error=pointing_error,
-#         tracking_efficiency=tracking_efficiency,
-#         Tatm=transmittance_up
-#     )
-#     a = uplink_channel._compute_loss_probability(height_balloon, math.ceil(simtime/Qonnector_init_time))
-#     uplink = CachedChannel(a)
-
-#     # Connect GS ↔ HAP
-#     net.connect_qonnectors("QonnectorGS", "QonnectorHAP", distance=height_balloon, loss_model=uplink)
-
-#     # Retrieve nodes
-#     gs = net.network.get_node("QonnectorGS")
-#     hap = net.network.get_node("QonnectorHAP")
-
-#     # BB84 protocol (GS sends, HAP receives)
-#     send = SendBB84(gs, Qonnector_init_succ, Qonnector_init_flip, hap)
-#     send.start()
-#     receive = ReceiveProtocol(hap, Qonnector_meas_succ, Qonnector_meas_flip, True, gs)
-#     receive.start()
-
-#     # Run simulation
-#     ns.sim_run(duration=simtime)
-
-#     # Post-processing
-#     L1 = Sifting(hap.QlientKeys[gs.name], gs.QlientKeys[hap.name])
-#     chan_eff = len(gs.QlientKeys[hap.name]) / len(hap.QlientKeys[gs.name])
-
-#     print(f"[Uplink] Balloon Altitude: {h_balloons} km, AO: {n}, Efficiency: {chan_eff:.4f}")
-#     return chan_eff 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# def theoretical_eff(distance, h_balloons, n):
-#     ## Assuming flat earth approximation
-#     zenith_angle = np.rad2deg(np.pi/2 - np.arcsin(h_balloons/distance))
-    
-#     Tatm = transmittance.slant(ground_station_alt, h_balloons, wavelength*1e9, zenith_angle)
-#     ch = DownlinkChannel(W0, rx_aperture_ground, obs_ratio_ground, n, Cn0, u_rms,
-#                          wavelength, ground_station_alt, h_balloons, zenith_angle,
-#                          pointing_error=pointing_error, tracking_efficiency=tracking_efficiency, Tatm=Tatm)
-#     eta = np.arange(1e-7, 1, 0.001)
-#     return ch._compute_mean_channel_efficiency(eta, distance, detector_efficiency=Qonnector_meas_succ)
-
-
-# def simulated_eff(distance, h_balloons, n, simtime=simtime):
-#     ## Assuming flat earth approximation
-#     zenith_angle = zenith_angle = compute_zenith_angle(0, h_balloons, distance) #np.rad2deg(np.pi/2 - np.arcsin(h_balloons/distance))
-    
-#     Tatm = transmittance.slant(ground_station_alt, h_balloons, wavelength*1e9, zenith_angle)
-    
-#     ch = DownlinkChannel(W0, rx_aperture_ground, obs_ratio_ground, n, Cn0, u_rms,
-#                          wavelength, ground_station_alt, h_balloons, zenith_angle,
-#                          pointing_error=pointing_error, tracking_efficiency=tracking_efficiency, Tatm=Tatm)
-    
-#     # Probability of loss per qubit
-#     loss_probs = ch._compute_loss_probability(distance, simtime)
-    
-#     # Monte Carlo simulate
-#     sent = simtime
-#     received = np.random.binomial(sent, 1-loss_probs.mean())  # approximate survival
-#     return received / sent
+# ============================================================
+# Secret key rate
+# ============================================================
 
 def h(p):
-    """Binary entropy function"""
-    return -p*np.log2(p)-(1-p)*np.log2(1-p)
+    return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
 
-def compute_skr(efficiency, ratesources=80e6, sourceeff=0.01, QBER=0.04):
-    """
-    Compute BB84 secret key rate (kbit/s) given channel efficiency.
 
-    Parameters
-    ----------
-    efficiency : float
-        Channel transmission efficiency (0–1), from theory or simulation.
-    ratesources : float
-        Pulse repetition rate (Hz).
-    sourceeff : float
-        Source efficiency.
-    QBER : float
-        Quantum Bit Error Rate (0–1).
-
-    Returns
-    -------
-    skr : float
-        Secret key rate in bit/s.
-    """
+def compute_skr(efficiency):
     if efficiency <= 0:
         return 0.0
-    rate = ratesources * sourceeff * efficiency
-    skr  = rate * (1 - 2 * h(QBER))
-    return skr
+    raw_rate = ratesources * sourceeff * efficiency
+    
+    return raw_rate * (1 - 2 * h(QBER))

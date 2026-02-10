@@ -7,6 +7,772 @@ plt.rcParams['ps.fonttype']  = 42
 
 df = pd.read_csv("dataset/balloon_sim_data.csv")
 
+R  = 6371  # Earth's radius in km
+
+params1 = {
+    # Optical
+    "wavelength": 1550e-9,     # [m]
+    "W0": 0.15,                # Initial beam waist [m] (15 cm)
+    
+    # Apertures
+    "rx_aperture_down": 0.75,  # Ground station [m]
+    "rx_aperture_up": 0.40,    # HAP [m]
+    "obs_ratio": 0.3,
+
+    # Atmosphere & turbulence
+    "Cn0": 1e-17,         # [m^(-2/3)] "Cn0": 9.6e-14,            # [m^(-2/3)]
+    "u_rms": 1,           # [m/s]
+
+    # Pointing & tracking
+    "pointing_error": 1e-7,    # 1 μrad (paper)
+    "tracking_efficiency": 0.85,
+
+    # Detection
+    "detector_eff": 0.85,
+
+    # Netsquid
+    "init_time": 1
+}
+
+params2 = {
+    # Optical
+    "wavelength": 1550e-9,     # [m]
+    "W0": 0.15,                # Initial beam waist [m] (15 cm)
+    
+    # Apertures
+    "rx_aperture_down": 0.75,  # Ground station [m]
+    "rx_aperture_up": 0.40,    # HAP [m]
+    "obs_ratio": 0.3,
+
+    # Atmosphere & turbulence
+    "Cn0": 1e-13,            # [m^(-2/3)] "Cn0": 9.6e-14,            # [m^(-2/3)]
+    "u_rms": 10,             # [m/s]
+
+    # Pointing & tracking
+    "pointing_error": 1e-7,    # 1 μrad (paper)
+    "tracking_efficiency": 0.85,
+
+    # Detection
+    "detector_eff": 0.85,
+
+    # Netsquid
+    "init_time": 1
+}
+
+def clip_eta(eta, eps=1e-16):
+    """
+    Enforce physical transmissivity bounds.
+    """
+    return min(eta, 1.0 - eps)
+
+
+def plob_skr_kbps(eta, ts):
+    """
+    PLOB SKR in kbps (direct formula, no compute_skr).
+    """
+    eta = clip_eta(eta)
+    return (
+        -ts.ratesources
+        * ts.sourceeff
+        * math.log1p(-eta) / math.log(2)
+        / 1e3
+    )
+
+def geometric_eta(distance_km, ts):
+    """
+    Ideal geometric (diffraction-only) transmissivity.
+    Assumes circular apertures and Airy divergence.
+    """
+
+    D_tx = ts.params["rx_aperture_up"]     # TX aperture (HAP)
+    D_rx = ts.params["rx_aperture_down"]   # RX aperture (GS)
+    lam  = ts.params["wavelength"]
+
+    theta = 1.22 * lam / D_tx              # diffraction half-angle
+    beam_diameter = theta * distance_km * 1e3
+
+    eta_geo = (D_rx / (D_tx + beam_diameter))**2
+
+    print(f"eta_geo: {eta_geo}")
+    return clip_eta(eta_geo)
+
+# def plot_skr_distance(n=6, d_min=25, d_max=250):
+#     """
+#     Plot skr over different LoS distances
+#     df : pandas.DataFrame with ["Time_s", "Longitude_deg", "Latitude_deg", "Altitude_m"]
+#     ts : transmittance simulation module/object with .theoretical_eff, .simulated_eff, .compute_skr
+#     """
+
+#     distances = [d for d in range(d_min, d_max)]
+#     altitude  = d_min
+    
+#     skr_theory1     = []
+#     # skr_sim1         = []
+#     # skr_sim_plob1    = []
+#     eta_theory1     = []
+#     # eta_sim1         = []
+
+#     skr_theory2     = []
+#     # skr_sim2         = []
+#     # skr_sim_plob2    = []
+#     eta_theory2     = []
+#     # eta_sim2         = []
+
+#     eta_fiber1      = []
+#     eta_fiber2      = []
+#     skr_fiber1      = []
+#     skr_fiber2      = []
+
+#     eta_ideal       = []
+
+#     skr_ideal  = []
+#     # Compute SKRs
+#     for idx_d, d in enumerate(distances):
+#         #eta_t, eta_s, skr_t, skr_s, skr_pt, skr_ps = compute_point(d, 15, "downlink", 10)
+#         eta_t1, skr_t1, skr_pt1 = compute_point_wsim(d, altitude, "downlink", 10, params1)
+#         eta_t2, skr_t2, skr_pt2 = compute_point_wsim(d, altitude, "downlink", 10, params2)
+        
+#         #eta_t = ts.channel_theory("downlink", 0, 15, d, n)
+#         #eta_s = ts.channel_simulation("downlink", 0, 15, d, n)
+
+#         eta_theory1.append(eta_t1 * 100)
+#         #eta_sim1.append(eta_s1 * 100)
+#         skr_theory1.append(skr_t1 / 1000)
+#         #skr_sim1.append(skr_s1 / 1000)
+
+#         eta_theory2.append(eta_t2 * 100)
+#         #eta_sim2.append(eta_s2 * 100)
+#         skr_theory2.append(skr_t2 / 1000)
+#         #skr_sim2.append(skr_s2 / 1000)
+        
+#         #skr_sim_plob.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_s) / 1000)
+
+#         fiber_alpha1 = 0.2  # dB/km
+#         fiber_alpha2 = 0.35 # dB/km
+#         fiber_loss1  = fiber_alpha1 * d + 3 + 0.15 * 2 + 0.5 * 2
+#         fiber_loss2  = fiber_alpha2 * d + 3 + 0.3 * 2 + 0.75 * 2
+#         fiber_eta1    = 10 ** (-fiber_loss1 / 10)
+#         fiber_eta2    = 10 ** (-fiber_loss2 / 10)
+
+#         eta_fiber1.append(fiber_eta1 * 100)
+#         eta_fiber2.append(fiber_eta2 * 100)
+
+#         skr_fiber1.append(ts.compute_skr(fiber_eta1) / 1000) #-ts.ratesources * ts.sourceeff * math.log1p(-fiber_eta) / math.log(2) / 1000)
+#         skr_fiber2.append(ts.compute_skr(fiber_eta2) / 1000) #-ts.ratesources * ts.sourceeff * math.log1p(-fiber_eta) / math.log(2) / 1000)
+
+#         #####################
+#         # Elevation angle
+#         R_RX = ts.params["rx_aperture_down"]
+#         R_TX = ts.params["rx_aperture_up"]
+#         W    = ts.params["wavelength"]
+#         THETA = 1.22 * W / R_TX
+
+#         # Losses
+#         L_geo = 10 * math.log10((R_TX + d * 1000 * THETA)**2 / R_RX**2)
+#         L_t = L_geo
+
+#         eta_geo = 10 ** (-L_t / 10)
+
+#         eta_ideal.append(eta_geo * 100)
+#         skr_ideal.append(ts.compute_skr(eta_geo) / 1000) #-ts.ratesources * ts.sourceeff * math.log1p(-ETA) / math.log(2) / 1000)
+
+#         # # Apertures (diameters in meters)
+#         # D_TX = ts.params["rx_aperture_down"]   # 0.75 m
+#         # D_RX = ts.params["rx_aperture_up"]     # 0.40 m
+        
+#         # # Wavelength
+#         # lam = ts.params["wavelength"]
+        
+#         # # Diffraction divergence (half-angle)
+#         # theta = 1.22 * lam / D_TX
+        
+#         # # Beam radius at receiver
+#         # w = theta * d * 1000  # meters
+
+#         # print(f"eta_geo: {10 * math.log10((D_TX + d * 1000 * theta)**2 / D_RX**2)}")
+        
+#         # # Geometric coupling efficiency
+#         # eta_geo = min((D_RX / (2 * w))**2, 1.0)
+        
+#         # eta_ideal.append(eta_geo * 100)
+#         # skr_ideal.append(ts.compute_skr(eta_geo) / 1000)
+#         #####################
+
+#         print(f"{idx_d} -> d: {d}, eta_t1: {eta_t1}, eta_t2: {eta_t2}, eta_i: {eta_geo}, skr_t1: {skr_theory1[-1]}, skr_t2: {skr_theory2[-1]}, skr_f1: {skr_fiber1[-1]}, skr_f2: {skr_fiber2[-1]}, skr_ip: {skr_ideal[-1]}")
+
+#     # Plot
+#     # plt.figure(figsize=(3,3))
+#     # plt.plot(distances, eta_theory, label="HAP", color="blue", marker="o", markevery=20)
+#     # #plt.plot(distances, eta_sim, label="Simulation", color="orange", marker="^", markevery=20)
+
+#     # plt.plot(distances, eta_fiber1, linestyle="--", color="red")
+#     # plt.plot(distances, eta_fiber2, linestyle="--", color="red")
+#     # plt.plot(distances, eta_ideal, label="HAP (Geo)", linestyle="--", color="green")
+
+#     # plt.fill_between(
+#     #     distances,
+#     #     eta_fiber1,
+#     #     eta_fiber2,
+#     #     color="red",
+#     #     alpha=0.2,
+#     #     label="Fiber"
+#     # )
+
+#     # plt.xlabel("Distance (km)", fontsize=12)
+#     # plt.ylabel("Channel Efficiency (%)", fontsize=12)
+#     # plt.grid(True)
+#     # plt.legend(fontsize=12)
+#     # plt.yscale("log")
+#     # plt.savefig("trans_distance.svg", format="svg", dpi=300, bbox_inches="tight")
+#     # plt.show()
+    
+#     # Plot
+#     plt.figure(figsize=(3,3))
+#     plt.plot(distances, skr_theory1, color="blue")
+#     plt.plot(distances, skr_theory2, color="blue")
+#     # plt.plot(distances, skr_sim, label="Simulation (DW)", color="orange", marker="^", markevery=20)
+#     #plt.plot(distances, skr_theory_plob, label="HAP (PLOB)", color="green", marker="h", markevery=20)
+#     # plt.plot(distances, skr_sim_plob, label="Simulation (PLOB)", color="red", marker="*", markevery=20)
+#     plt.plot(distances, skr_fiber1, linestyle="--", color="red")
+#     plt.plot(distances, skr_fiber2, linestyle="--", color="red")
+#     plt.plot(distances, skr_ideal, label="HAP (Geo)", linestyle="--", color="green")
+
+#     plt.fill_between(
+#         distances,
+#         skr_theory1,
+#         skr_theory2,
+#         color="blue",
+#         alpha=0.2,
+#         label="HAP"
+#     )
+    
+#     plt.fill_between(
+#         distances,
+#         skr_fiber1,
+#         skr_fiber2,
+#         color="red",
+#         alpha=0.2,
+#         label="Fiber"
+#     )
+
+#     plt.xlabel("Distance (km)", fontsize=12)
+#     plt.ylabel("Maximum SKR (Kbps)", fontsize=12)
+#     plt.grid(True)
+#     plt.legend(fontsize=12, borderpad=0.2, handletextpad=0.1)
+#     plt.yscale("log")
+#     plt.savefig("skr_distance.svg", format="svg", dpi=300, bbox_inches="tight")
+#     plt.show()
+
+def plot_skr_distance(d_min=25, d_max=250):
+    """
+    Plot SKR vs distance with:
+      - DW bounds (HAP, Fiber)
+      - PLOB bounds (HAP, Fiber)
+      - Ideal geometric-loss-only HAP curve
+    """
+
+    distances_km = list(range(d_min, d_max))
+    hap_altitude_km = d_min
+
+    # =========================
+    # Storage
+    # =========================
+
+    # --- DW bounds ---
+    hap_dw_low, hap_dw_high = [], []
+    fiber_dw_low, fiber_dw_high = [], []
+
+    # --- PLOB bounds ---
+    hap_plob_low, hap_plob_high = [], []
+    fiber_plob_low, fiber_plob_high = [], []
+
+    # --- Ideal geometric ---
+    hap_geo_dw = []
+    hap_geo_plob = []
+
+    # =========================
+    # Loop
+    # =========================
+
+    for d in distances_km:
+
+        # ---------- HAP (DW, two parameter sets) ----------
+        eta_hap_1, skr_dw_1, _ = compute_point_wsim(
+            d, hap_altitude_km, "downlink", 10, params1
+        )
+        eta_hap_2, skr_dw_2, _ = compute_point_wsim(
+            d, hap_altitude_km, "downlink", 10, params2
+        )
+
+        eta_hap_1 = clip_eta(eta_hap_1)
+        eta_hap_2 = clip_eta(eta_hap_2)
+
+        hap_dw_low.append(min(skr_dw_1, skr_dw_2))
+        hap_dw_high.append(max(skr_dw_1, skr_dw_2))
+
+        hap_plob_low.append(
+            min(
+                plob_skr_kbps(eta_hap_1, ts),
+                plob_skr_kbps(eta_hap_2, ts)
+            )
+        )
+        hap_plob_high.append(
+            max(
+                plob_skr_kbps(eta_hap_1, ts),
+                plob_skr_kbps(eta_hap_2, ts)
+            )
+        )
+
+        # ---------- Fiber ----------
+        alpha_low  = 0.16  # dB/km
+        alpha_high = 0.28   # dB/km
+
+        loss_low  = alpha_low  * math.sqrt(d**2 - 25**2) + 3 + 0.15 * 2 + 0.50 * 2
+        loss_high = alpha_high * math.sqrt(d**2 - 25**2) + 3 + 0.30 * 2 + 0.75 * 2
+
+        eta_fiber_low  = clip_eta(10 ** (-loss_low / 10))
+        eta_fiber_high = clip_eta(10 ** (-loss_high / 10))
+
+        fiber_dw_low.append(ts.compute_skr(eta_fiber_low))
+        fiber_dw_high.append(ts.compute_skr(eta_fiber_high))
+
+        fiber_plob_low.append(plob_skr_kbps(eta_fiber_low, ts))
+        fiber_plob_high.append(plob_skr_kbps(eta_fiber_high, ts))
+
+        # ---------- Ideal geometric (HAP) ----------
+        eta_geo = geometric_eta(d, ts)
+
+        hap_geo_dw.append(ts.compute_skr(eta_geo))
+        hap_geo_plob.append(plob_skr_kbps(eta_geo, ts))
+
+    # =========================
+    # Plot 1: DW bounds
+    # =========================
+
+    plt.figure(figsize=(3.2, 3.2))
+
+    # plt.plot(
+    #     distances_km,
+    #     hap_dw_low,
+    #     linestyle="-",
+    #     color="blue",
+    # )
+
+    # plt.plot(
+    #     distances_km,
+    #     hap_dw_high,
+    #     linestyle="-",
+    #     color="blue",
+    # )
+
+    plt.plot(
+        distances_km,
+        hap_geo_dw,
+        linestyle="-",
+        color="black",
+        marker="^", 
+        markevery=25,
+        label="HAP-Geo"
+    )
+
+    plt.fill_between(
+        distances_km,
+        fiber_dw_low,
+        fiber_dw_high,
+        facecolor="lightcoral",     # important
+        edgecolor="black",
+        hatch="o",
+        alpha=0.8,
+        label="Fiber"
+    )
+    plt.fill_between(
+        distances_km,
+        hap_dw_low,
+        hap_dw_high,
+        facecolor="lightblue",     # important
+        edgecolor="black",
+        hatch=".",
+        alpha=0.8,
+        label="HAP"
+    )
+
+    # plt.plot(
+    #     distances_km,
+    #     fiber_dw_low,
+    #     linestyle="-",
+    #     color="red",
+    # )
+
+    # plt.plot(
+    #     distances_km,
+    #     fiber_dw_high,
+    #     linestyle="-",
+    #     color="red",
+    # )
+
+    plt.yscale("log")
+    plt.xlabel("LoS Distance (km)")
+    plt.ylabel("SKR DW Bound (bps)")
+    plt.grid(True, which="both", alpha=0.3)
+    plt.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig("skr_distance_dw.pdf", format='pdf', transparent=True, bbox_inches='tight', pad_inches=0.01)
+    plt.savefig("skr_distance_dw.svg", format="svg", dpi=300, bbox_inches="tight")
+    plt.show()
+
+    # =========================
+    # Plot 2: PLOB bounds
+    # =========================
+
+    plt.figure(figsize=(3.2, 3.2))
+
+    # plt.plot(
+    #     distances_km,
+    #     hap_plob_low,
+    #     linestyle="-",
+    #     color="blue",
+    # )
+
+    # plt.plot(
+    #     distances_km,
+    #     hap_plob_high,
+    #     linestyle="-",
+    #     color="blue",
+    # )
+    
+    
+
+    plt.plot(
+        distances_km,
+        hap_geo_plob,
+        linestyle="-",
+        color="black",
+        marker="^", 
+        markevery=25,
+        label="HAP-Geo"
+    )
+    plt.fill_between(
+        distances_km,
+        fiber_plob_low,
+        fiber_plob_high,
+        facecolor="lightcoral",     # important
+        edgecolor="black",
+        hatch="o",
+        alpha=0.8,
+        label="Fiber"
+    )
+    plt.fill_between(
+        distances_km,
+        hap_plob_low,
+        hap_plob_high,
+        facecolor="lightblue",     # important
+        edgecolor="black",
+        hatch=".",
+        alpha=0.8,
+        label="HAP"
+    )
+    
+
+    # plt.plot(
+    #     distances_km,
+    #     fiber_plob_low,
+    #     linestyle="-",
+    #     color="red",
+    # )
+
+    # plt.plot(
+    #     distances_km,
+    #     fiber_plob_high,
+    #     linestyle="-",
+    #     color="red",
+    # )
+
+    plt.yscale("log")
+    plt.xlabel("LoS Distance (km)")
+    plt.ylabel("SKR PLOB Bound (bps)")
+    plt.grid(True, which="both", alpha=0.3)
+    plt.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig("skr_distance_plob.pdf", format='pdf', transparent=True, bbox_inches='tight', pad_inches=0.01)
+    plt.savefig("skr_distance_plob.svg", format="svg", dpi=300, bbox_inches="tight")
+    plt.show()
+
+def plot_connectivity_graph_3d(
+    gnodes,
+    hnodes,
+    links,
+    t=0,                 # time index for node positions
+    cyl_radius=0.65,      # cylinder radius (lon/lat units)
+    cyl_alpha=0.05       # transparency
+):
+    """
+    3D connectivity graph with GS, HAP trajectories, links,
+    and a transparent vertical cylinder.
+    """
+
+    fig = plt.figure(figsize=(3, 3))
+    ax = fig.add_subplot(111, projection="3d")
+
+    # ==========================
+    # Plot Ground Stations (GS)
+    # ==========================
+    for gs in gnodes:
+        ax.scatter(
+            gs.lg, gs.la, 0,
+            color="skyblue", marker="^", s=120, zorder=5
+        )
+        if hasattr(gs, "tag"):
+            ax.text(gs.lg - 0.05, gs.la - 0.05, 0, gs.tag, fontsize=14)
+
+    # ==========================
+    # Plot HAP initial positions
+    # ==========================
+    for h in hnodes:
+        ax.scatter(
+            h.lg[t], h.la[t], h.H[t],
+            color="red", s=10, zorder=6
+        )
+        if hasattr(h, "tag"):
+            ax.text(h.lg[t] - 0.05, h.la[t] - 0.05, h.H[t], h.tag, fontsize=14)
+
+    # ==========================
+    # Plot links (no duplicates)
+    # ==========================
+    plotted_edges = set()
+    for l in links:
+        edge_key = frozenset([l.n1, l.n2])
+        if edge_key in plotted_edges:
+            continue
+        plotted_edges.add(edge_key)
+
+        def node_xyz(n):
+            if isinstance(n.lg, list):
+                return n.lg[t], n.la[t], n.H[t]
+            else:
+                return n.lg, n.la, 0
+
+        x1, y1, z1 = node_xyz(l.n1)
+        x2, y2, z2 = node_xyz(l.n2)
+
+        ax.plot(
+            [x1, x2], [y1, y2], [z1, z2],
+            color="gray", linestyle="--", linewidth=0.6, alpha=0.6
+        )
+
+    # ==========================
+    # Plot HAP trajectories
+    # ==========================
+    for h in hnodes:
+        ax.plot(
+            h.lg, h.la, h.H,
+            color="red", linewidth=1, alpha=0.8
+        )
+
+    # ==========================
+    # Transparent cylinder
+    # ==========================
+    # Cylinder center (mean lon/lat)
+    all_lons = [gs.lg for gs in gnodes] + [h.lg[t] for h in hnodes]
+    all_lats = [gs.la for gs in gnodes] + [h.la[t] for h in hnodes]
+    z_max = max(max(h.H) for h in hnodes)
+
+    cx = np.mean(all_lons)
+    cy = np.mean(all_lats)
+
+    theta = np.linspace(0, 2*np.pi, 60)
+    z = np.linspace(0, z_max, 40)
+    theta, z = np.meshgrid(theta, z)
+
+    x_cyl = cx + cyl_radius * np.cos(theta)
+    y_cyl = cy + cyl_radius * np.sin(theta)
+
+    ax.plot_surface(
+        x_cyl, y_cyl, z,
+        color="blue",
+        alpha=cyl_alpha,
+        linewidth=0,
+        shade=False
+    )
+
+    # ==========================
+    # Axis labels and limits
+    # ==========================
+    ax.set_xlabel("Longitude", fontsize=14)
+    ax.set_ylabel("Latitude", fontsize=14)
+    ax.set_zlabel("Altitude (km)", fontsize=14)
+
+    ax.set_xlim(min(all_lons) - cyl_radius, max(all_lons) + cyl_radius)
+    ax.set_ylim(min(all_lats) - cyl_radius, max(all_lats) + cyl_radius)
+    ax.set_zlim(0, z_max * 1.05)
+
+    # Longitude / Latitude ticks every 0.5 deg
+    x_ticks = np.linspace(ax.get_xlim()[0], ax.get_xlim()[1], 4)
+    y_ticks = np.linspace(ax.get_ylim()[0], ax.get_ylim()[1], 4)
+    
+    # Altitude ticks every ~25%
+    z_ticks = np.linspace(0, z_max, 4)
+    
+    ax.set_xticks(x_ticks)
+    ax.set_yticks(y_ticks)
+
+    ax.tick_params(labelsize=10)
+
+    # ==========================
+    # View angle (important)
+    # ==========================
+    ax.view_init(elev=25, azim=100)
+
+    plt.tight_layout()
+    plt.savefig("hap_qkd_trajectory_3d.pdf", format="pdf", bbox_inches="tight", pad_inches=0.01, transparent="True")
+    plt.show()
+
+
+def plot_skr_eta_stratotegic_real(n=6, d_min_t=0, d_max_t=86400):
+    """
+    Plot theoretical and simulated SKR for a balloon trajectory over time.
+    df : pandas.DataFrame with ["Time_s", "Longitude_deg", "Latitude_deg", "Altitude_m"]
+    ts : transmittance simulation module/object with .theoretical_eff, .simulated_eff, .compute_skr
+    """
+    df_filtered = (
+        df[df["Time_s"] % 300 == 0]
+        .drop_duplicates(subset=["Time_s"], keep="first")
+        .reset_index(drop=True)
+    )
+
+    times = df_filtered["Time_s"].values / 3600
+    mask = (times >= d_min_t) & (times <= d_max_t)
+    times = times[mask]
+
+    results = []  # list of tuples (d, eta_t, eta_s, skr_t, skr_s)
+
+    la_rad_g = math.radians(49)
+    lg_rad_g = math.radians(279)
+    x_g = R * math.cos(la_rad_g) * math.cos(lg_rad_g)
+    y_g = R * math.cos(la_rad_g) * math.sin(lg_rad_g)
+
+    distances = []
+    altitudes = []
+    for _, row in df_filtered[mask].iterrows():
+        lon = row["Longitude_deg"]
+        lat = row["Latitude_deg"]
+        alt = row["Altitude_m"] / 1000  # km
+
+        # Balloon coordinates
+        la_rad_h = math.radians(lat)
+        lg_rad_h = math.radians(lon)
+        x_h = R * math.cos(la_rad_h) * math.cos(lg_rad_h)
+        y_h = R * math.cos(la_rad_h) * math.sin(lg_rad_h)
+
+        # Horizontal distance
+        d_los_hor = math.sqrt((x_h - x_g) ** 2 + (y_h - y_g) ** 2)
+
+        # Elevation angle
+        alpha = math.atan(alt / d_los_hor) if d_los_hor > 0 else math.pi / 2
+
+        # LOS distance
+        d_los = alt / math.sin(alpha)
+
+        altitudes.append(alt)
+        distances.append(d_los)
+
+    skr_theory      = []
+    #skr_sim         = []
+    skr_theory_plob = []
+    #skr_sim_plob    = []
+    eta_theory      = []
+    #eta_sim         = []
+    if os.path.exists("skr_strato_data.pkl"):
+        with open("skr_strato_data.pkl", "rb") as f:
+            results = pickle.load(f)
+        print(f"[INFO] Loaded checkpoint")
+
+        # Iterate and access each entry
+        for idx, entry in enumerate(results):
+            d     = entry["d"]
+            eta_t = entry["eta_t"]
+            #eta_s = entry["eta_s"]
+            skr_t = entry["skr_t"]
+            #skr_s = entry["skr_s"]
+
+            print(
+                f"{idx} -> d: {d}, eta_t: {eta_t},"
+                f"skr_t: {skr_t}"
+            )
+
+            #distances.append(d)
+            eta_theory.append(eta_t)
+            #eta_sim.append(eta_s)
+            skr_theory.append(skr_t)
+            #skr_sim.append(skr_s)
+
+            skr_theory_plob.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_t) / 1e6)
+            #skr_sim_plob.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_s) / 1000)
+    else:
+        # Compute SKRs
+        print(f"{len(altitudes)}, {len(distances)}")
+        for idx_d, d in enumerate(distances):
+            eta_t, skr_t, skr_pt = compute_point(d, altitudes[idx_d], "downlink", 10)
+            
+            #eta_t = ts.channel_theory("downlink", 0, altitudes[idx_d], d, n)
+            #eta_s = ts.channel_simulation("downlink", 0, altitudes[idx_d], d, n)
+
+            eta_theory.append(eta_t * 100)
+            #eta_sim.append(eta_s * 100)
+            skr_theory.append(skr_t / 1e6)
+            #skr_sim.append(skr_s / 1000)
+            
+            print(f"{idx_d} -> d: {d}, eta_t: {eta_t}, skr_t: {skr_theory[-1]}")
+
+            skr_theory_plob.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_t) / 1e6)
+            #skr_sim_plob.append(-ts.ratesources * ts.sourceeff * math.log2(1 - eta_s) / 1000)
+
+            results.append({
+                "d": d,
+                "eta_t": eta_t,
+                #"eta_s": eta_s,
+                "skr_t": skr_t,
+                #"skr_s": skr_s,
+            })
+    
+        with open("skr_strato_data.pkl", "wb") as f:
+            pickle.dump(results, f)
+
+    # Plot
+    # plt.figure(figsize=(7,3))
+    # plt.plot(times, eta_theory, label="Theory", color="blue", marker="o", markevery=20)
+    # plt.plot(times, eta_sim, label="Simulation", color="orange", marker="^", markevery=20)
+
+    # plt.xlabel("Time (s)", fontsize=12)
+    # plt.ylabel("Transmittance (%)", fontsize=12)
+    # plt.grid(True)
+    # plt.legend(fontsize=12)
+    # plt.savefig("trans_strato.svg", format="svg", dpi=300, bbox_inches="tight")
+    # plt.show()
+    
+    # Plot
+    plt.figure(figsize=(3,2))
+    plt.plot(times, skr_theory, label="DW", color="blue", marker="o", markevery=40)
+    #plt.plot(times, skr_sim, label="Simulation (DW)", color="orange", marker="^", markevery=20)
+    plt.plot(times, skr_theory_plob, label="PLOB", color="green", marker="h", markevery=40)
+    #plt.plot(times, skr_sim_plob, label="Simulation (PLOB)", color="red", marker="*", markevery=20)
+
+    plt.xlabel("Time (hours)", fontsize=12)
+    plt.ylabel("SKR (Mbps)", fontsize=12)
+    plt.grid(True)
+    plt.legend(fontsize=12)
+    plt.savefig("skr_strato.svg", format="svg", dpi=300, bbox_inches="tight")
+    plt.show()
+
+    # Plot
+    plt.figure(figsize=(3,2))
+    plt.plot(times, distances, color="purple", marker="o", markevery=40)
+
+    plt.xlabel("Time (hours)", fontsize=12)
+    plt.ylabel("Distance (km)", fontsize=12)
+    plt.grid(True)
+    plt.savefig("distance_strato.svg", format="svg", dpi=300, bbox_inches="tight")
+    plt.show()
+
 def plot_solution(solution):
     """
     Plot solution variables as time series (2D and 3D depending on dimension).
@@ -244,79 +1010,100 @@ def plot_loss_rain():
 
 def plot_loss_distance(p_all, fog, rain, snow):
     # Weather cases: (rain, fog, snow)
-    if p_all:
-        cases = {
-            "No Weather": (0, 0, 0),
-            "Rain Only":  (1, 0, 0),
-            "Fog Only":   (0, 1, 0),
-            # "Snow Only":  (0, 0, 1),
-        }
-    elif fog:
-        cases = {"Fog Only": (0, 1, 0)}
-    elif rain:
-        cases = {"Rain Only": (1, 0, 0)}
-    elif snow:
-        cases = {"Snow Only": (0, 0, 1)}
+    # if p_all:
+    #     cases = {
+    #         "No Weather": (0, 0, 0),
+    #         "Rain Only":  (1, 0, 0),
+    #         "Fog Only":   (0, 1, 0),
+    #         # "Snow Only":  (0, 0, 1),
+    #     }
+    # elif fog:
+    #     cases = {"Fog Only": (0, 1, 0)}
+    # elif rain:
+    #     cases = {"Rain Only": (1, 0, 0)}
+    # elif snow:
+    #     cases = {"Snow Only": (0, 0, 1)}
         
     # Prepare plot with 3 subplots
     fig     = plt.figure(figsize=(8, 6))
-    ax_loss = fig.add_subplot(111)
+    ax_loss = fig.add_subplot(311)
+    ax_skr  = fig.add_subplot(312)
 
     distance_range = range(15, 225)  # in km
 
     alt = 15
 
-    # loop through each weather case
-    for label, (rain, fog, snow) in cases.items():
-        d_values, L_values = [], []
+    L_values = []
+    d_values = []
+    K_values = []
+    K_fvalues = []
+    for d in distance_range:
+        # Elevation angle
+        alpha = math.asin(alt / d)
 
-        for d in distance_range:
-            # Elevation angle
-            alpha = math.asin(alt / d)
+        THETA = 1.22 * 1550e-9 / 0.4
 
-            # Losses
-            L_geo = 20 * max(math.log10((R_TX + d * 1000 * THETA) / R_RX), 0)
-            L_ma  = 0.01 * d
+        # Losses
+        L_geo = 20 * max(math.log10((0.4 + d * 1000 * THETA) / 0.3), 0)
+        L_ma  = 0.01 * d
 
-            H_W = 5
-            H_C = 0.5
-            R_W = H_W / math.sin(alpha)
-            R_C = H_C / math.sin(alpha)
+        H_W = 5
+        H_C = 0.5
+        R_W = H_W / math.sin(alpha)
+        R_C = H_C / math.sin(alpha)
 
-            if fog:
-                U = 1.6 if V_fog > 50 else (1.3 if 6 < V_fog <= 50 else 0.585 * V_fog ** (1 / 3))
-            elif rain or snow:
-                U = 1.6 if V_rain_snow > 50 else (1.3 if 6 < V_rain_snow <= 50 else 0.585 * V_rain_snow ** (1 / 3))
-            else:
-                U = 1.6
+        # if fog:
+        #     U = 1.6 if V_fog > 50 else (1.3 if 6 < V_fog <= 50 else 0.585 * V_fog ** (1 / 3))
+        # elif rain or snow:
+        #     U = 1.6 if V_rain_snow > 50 else (1.3 if 6 < V_rain_snow <= 50 else 0.585 * V_rain_snow ** (1 / 3))
+        # else:
+            # U = 1.6
 
-            L_fog  = (3.91 / V_fog)       * ((LAMBDA / 550 * 1e9) ** (-U)) * R_C
-            L_snw  = (58   / V_rain_snow) * R_W
-            L_rain = (2.8  / V_rain_snow) * R_W
+        # L_fog  = (3.91 / V_fog)       * ((LAMBDA / 550 * 1e9) ** (-U)) * R_C
+        # L_snw  = (58   / V_rain_snow) * R_W
+        # L_rain = (2.8  / V_rain_snow) * R_W
 
-            # Total loss
-            L_t = L_geo + L_ma + L_fog * fog + L_snw * snow + L_rain * rain
+        # # Total loss
+        # L_t = L_geo + L_ma + L_fog * fog + L_snw * snow + L_rain * rain
+        
+        L_t = L_geo + L_ma
 
-            ETA = 10 ** (-L_t / 10)
+        ETA = 10 ** (-L_t / 10)
 
-            # Key rate
-            K_link = -B * math.log2(1 - ETA)
+        ETA_fiber = 10 ** (-0.02*d)
 
-            d_values.append(d)
-            L_values.append(L_t)
+        # Key rate
+        K_link  = -80e6 * math.log2(1 - ETA)
+        K_flink = -80e6 * math.log2(1 - ETA_fiber)
 
-        # Plot Loss vs Distance
-        ax_loss.plot(d_values, L_values, label=label)
+        d_values.append(d)
+        L_values.append(L_t)
+        K_values.append(K_link)
+        K_fvalues.append(K_flink)
+
+    # Plot Loss vs Distance
+    ax_loss.plot(d_values, L_values, label="")
 
     # Loss plot formatting
     ax_loss.set_xlabel("Distance (km)")
     ax_loss.set_ylabel("Total Loss L_t (dB)")
-    ax_loss.set_title("Total Channel Loss vs Distance")
     ax_loss.legend()
     ax_loss.grid(True)
 
+    # Plot Loss vs Distance
+    ax_skr.plot(d_values, K_values,   label="HAP")
+    ax_skr.plot(d_values, K_fvalues, label="Fiber")
+
+    # Loss plot formatting
+    ax_skr.set_xlabel("Distance (km)")
+    ax_skr.set_ylabel("SKR")
+    ax_skr.legend()
+    ax_skr.grid(True)
+
+    plt.yscale("log")
     plt.tight_layout()
     plt.show()
+
 
 def plot_key_rate_stratotegic(p_all, fog, rain, snow):
     # Keep only rows where Time_s is an integer
@@ -382,8 +1169,10 @@ def plot_key_rate_stratotegic(p_all, fog, rain, snow):
             # LOS distance
             d_los = alt / math.sin(alpha)
 
+            THETA = 1.22 * 1550e-9 / 0.4
+
             # Losses
-            L_geo = 20 * max(math.log10((R_TX + d_los * 1000 * THETA) / R_RX), 0)
+            L_geo = 20 * max(math.log10((0.4 + d_los * 1000 * THETA) / 0.3), 0)
             L_ma  = 0.01 * d_los
 
             H_W = 5
@@ -448,14 +1237,14 @@ def plot_key_rate_stratotegic(p_all, fog, rain, snow):
     plt.tight_layout()
     plt.show()
 
-def plot_transmittance_stratotegic_real(n=5, d_min_t=0, d_max_t=8): #86400
+def plot_transmittance_stratotegic_real(n=5, d_min_t=0, d_max_t=800): #86400
     """
     Plot theoretical and simulated transmittance for a balloon trajectory over time.
     df : pandas.DataFrame with ["Time_s", "Longitude_deg", "Latitude_deg", "Altitude_m"]
     ts : transmittance simulation module/object with .theoretical_eff and .simulated_eff
     """
     # Filter integer timestamps
-    df_filtered = df[df["Time_s"] % 1 == 0].reset_index(drop=True)
+    df_filtered = df[df["Time_s"] % 100 == 0].reset_index(drop=True)
 
     # Time range (0 to 86400 sec default)
     times = df_filtered["Time_s"].values
@@ -472,8 +1261,8 @@ def plot_transmittance_stratotegic_real(n=5, d_min_t=0, d_max_t=8): #86400
         distances.append(alt)  
     
     # Compute efficiencies
-    eta_theory = [ts.theoretical_eff(distance=d, h_balloons=15, n=n) for d in distances]
-    eta_sim    = [ts.simulated_eff(distance=d, h_balloons=15, n=n) for d in distances]
+    eta_theory = [ts.channel_theory("downlink", 0, 15, d, n) for d in distances]
+    eta_sim    = [ts.channel_simulation("downlink", 0, 15, d, n) for d in distances]
 
     # Plot
     plt.figure(figsize=(12,6))
@@ -483,44 +1272,6 @@ def plot_transmittance_stratotegic_real(n=5, d_min_t=0, d_max_t=8): #86400
     plt.xlabel("Time (s)")
     plt.ylabel("Transmittance (η)")
     plt.title("Transmittance vs Time (Full-day Balloon Trajectory)")
-    plt.grid(True)
-    plt.legend()
-    plt.show()
-
-def plot_skr_stratotegic_real(n=5, d_min_t=0, d_max_t=8):
-    """
-    Plot theoretical and simulated SKR for a balloon trajectory over time.
-    df : pandas.DataFrame with ["Time_s", "Longitude_deg", "Latitude_deg", "Altitude_m"]
-    ts : transmittance simulation module/object with .theoretical_eff, .simulated_eff, .compute_skr
-    """
-    df_filtered = df[df["Time_s"] % 1 == 0].reset_index(drop=True)
-
-    times = df_filtered["Time_s"].values
-    mask = (times >= d_min_t) & (times <= d_max_t)
-    times = times[mask]
-
-    distances = []
-    for _, row in df_filtered[mask].iterrows():
-        alt = row["Altitude_m"] / 1000  # km
-        distances.append(alt)
-
-    # Compute SKRs
-    skr_theory = []
-    skr_sim    = []
-    for d in distances:
-        eta_t = ts.theoretical_eff(distance=d, h_balloons=15, n=n)
-        eta_s = ts.simulated_eff(distance=d, h_balloons=15, n=n)
-        skr_theory.append(ts.compute_skr(eta_t))
-        skr_sim.append(ts.compute_skr(eta_s))
-
-    # Plot
-    plt.figure(figsize=(12,6))
-    plt.plot(times, skr_theory, label="Theoretical SKR", color="green")
-    plt.plot(times, skr_sim, label="Simulated SKR", color="orange", linestyle="--")
-
-    plt.xlabel("Time (s)")
-    plt.ylabel("SKR (bps)")
-    plt.title("Secret Key Rate vs Time (Full-day Balloon Trajectory)")
     plt.grid(True)
     plt.legend()
     plt.show()
@@ -626,7 +1377,7 @@ def plot_connectivity_graph(gnodes, hnodes, links):
     plt.xlabel("Longitude", fontsize=13)
     plt.ylabel("Latitude", fontsize=13)
     plt.xlim(min(all_lons) - 0.2, max(all_lons) + 1.5)
-    plt.ylim(min(all_lats) - 0.2, max(all_lats) + 0.2)
+    plt.ylim(min(all_lats) - 0.2, max(all_lats) + 0.3)
     plt.xticks(fontsize=13)
     plt.yticks(fontsize=13)
     
@@ -635,7 +1386,7 @@ def plot_connectivity_graph(gnodes, hnodes, links):
         Line2D([], [], marker='^', color='skyblue', linestyle='None', markersize=6, label='GS'),
         Line2D([], [], marker='o', color='orange', linestyle='None', markersize=6, label='HAP')
     ]
-    plt.legend(handles=custom_handles, loc='best', frameon=True, fontsize=13)
+    plt.legend(handles=custom_handles, loc='upper right', frameon=True, fontsize=13)
     
     plt.grid(True, alpha=0.3)
 
@@ -736,56 +1487,66 @@ def animate_hap_trajectories(times, lons_list, lats_list, hap_names):
 
 
 
-def compute_point(args):
+def compute_point(d, h, dir, n):
     """
     Worker function for one (distance, height).
     """
-    d, h, dir, n = args
-    eta_t = ts.channel_theory(direction=dir, gs_alt=0, balloon_alt=h, distance=d, n_correction=n)
-    eta_s = ts.channel_simulation(direction=dir, gs_alt=0, balloon_alt=h, distance=d, n_correction=n)
+    eta_t = ts.channel_theory(direction=dir, gs_alt=0, hap_alt=h, distance=d, n_correction=n, params_in=ts.params)
+    #eta_s = ts.channel_simulation(direction=dir, gs_alt=0, hap_alt=h, distance=d, n_correction=n)
     # print(f"dir: {dir}, h: {h}, d: {d}, n: {n}")
     # print(f"eta_t: {eta_t}, eta_s: {eta_s}")
 
     skr_t   = ts.compute_skr(eta_t)
-    skr_s   = ts.compute_skr(eta_s)
+    #skr_s   = ts.compute_skr(eta_s)
     skr_pt  = -ts.ratesources * ts.sourceeff * math.log2(1 - eta_t)
-    skr_ps  = -ts.ratesources * ts.sourceeff * math.log2(1 - eta_s)
-    return skr_t, skr_s, skr_pt, skr_ps
+    #skr_ps  = -ts.ratesources * ts.sourceeff * math.log2(1 - eta_s)
+    #return eta_t, eta_s, skr_t, skr_s, skr_pt, skr_ps
+    return eta_t, skr_t, skr_pt
 
-# def plot_skr(dir, n, d_list, h_list, max_workers=24):
-#     """
-#     Parallelized SKR plotter across CPU cores with progress bar.
-#     """
-#     times = range(len(d_list))
+def compute_point_wsim(d, h, dir, n, params_in):
+    """
+    Worker function for one (distance, height).
+    """
+    eta_t = ts.channel_theory(direction=dir, gs_alt=0, hap_alt=h, distance=d, n_correction=n, params_in=params_in)
 
-#     # Pack args
-#     tasks = [(d, h_list[idx], dir, n) for idx, d in enumerate(d_list)]
-#     skr_theory, skr_sim, skr_plob_theory, skr_plob_sim = [], [], [], []
+    skr_t   = ts.compute_skr(eta_t)
+    skr_pt  = -ts.ratesources * ts.sourceeff * math.log2(1 - eta_t)
+    return eta_t, skr_t, skr_pt
 
-#     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-#         futures = [executor.submit(compute_point, t) for t in tasks]
-#         for f in tqdm(as_completed(futures), total=len(futures), desc="Computing SKR"):
-#             skr_t, skr_s, skr_pt, skr_ps = f.result()
-#             skr_theory.append(skr_t * 1e-3)
-#             skr_sim.append(skr_s * 1e-3)
-#             skr_plob_theory.append(skr_pt * 1e-3)
-#             skr_plob_sim.append(skr_ps * 1e-3)
+def plot_skr(dir, n, d_list, h_list, max_workers=24):
+    """
+    Parallelized SKR plotter across CPU cores with progress bar.
+    """
+    times = range(len(d_list))
 
-#     print("\nAll points computed.")
+    # Pack args
+    tasks = [(d, h_list[idx], dir, n) for idx, d in enumerate(d_list)]
+    skr_theory, skr_sim, skr_plob_theory, skr_plob_sim = [], [], [], []
 
-#     # Plot
-#     plt.figure(figsize=(12,6))
-#     plt.plot(times, skr_theory, label="SKR DW Bound (Theoretical)", color="green")
-#     plt.plot(times, skr_sim, label="SKR DW Bound (Simulation)", color="orange", linestyle="--")
-#     plt.plot(times, skr_plob_theory, label="SKR PLOB Bound (Theoretical)", color="blue", linestyle="-.")
-#     plt.plot(times, skr_plob_sim, label="SKR PLOB Bound (Simulation)", color="red", linestyle=":")
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(compute_point, t) for t in tasks]
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Computing SKR"):
+            skr_t, skr_s, skr_pt, skr_ps = f.result()
+            skr_theory.append(skr_t * 1e-3)
+            skr_sim.append(skr_s * 1e-3)
+            skr_plob_theory.append(skr_pt * 1e-3)
+            skr_plob_sim.append(skr_ps * 1e-3)
 
-#     plt.xlabel("Time (s)")
-#     plt.ylabel("SKR (kbps)")
-#     plt.grid(True)
-#     plt.legend()
-#     plt.savefig("skr.svg", format="svg", dpi=300, bbox_inches="tight")
-#     plt.show()
+    print("\nAll points computed.")
+
+    # Plot
+    plt.figure(figsize=(12,6))
+    plt.plot(times, skr_theory, label="SKR DW Bound (Theoretical)", color="green")
+    plt.plot(times, skr_sim, label="SKR DW Bound (Simulation)", color="orange", linestyle="--")
+    plt.plot(times, skr_plob_theory, label="SKR PLOB Bound (Theoretical)", color="blue", linestyle="-.")
+    plt.plot(times, skr_plob_sim, label="SKR PLOB Bound (Simulation)", color="red", linestyle=":")
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("SKR (kbps)")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig("skr.svg", format="svg", dpi=300, bbox_inches="tight")
+    plt.show()
 
 # def plot_skr(dir, n, d_list, h_list, start_time=0, end_time=None, 
 #               max_workers=24, result_file="skr_results.pkl"):
@@ -925,10 +1686,10 @@ def plot_skr(result_file="skr_results.pkl", outlier_factor=3.0):
 
     # === Plot cleaned results ===
     plt.figure(figsize=(8,3))
-    plt.plot(times_hours, skr_sim, label="SKR DW Bound (Simulation)", color="orange", linestyle="--", marker="o", markersize=8, markevery=8640)
-    plt.plot(times_hours, skr_plob_sim, label="SKR PLOB Bound (Simulation)", color="red", linestyle=":", marker="x", markersize=8, markevery=8640)
-    plt.plot(times_hours, skr_theory, label="SKR DW Bound (Theoretical)", color="green", marker="s", markersize=8, markevery=8640)
-    plt.plot(times_hours, skr_plob_theory, label="SKR PLOB Bound (Theoretical)", color="blue", linestyle="-.", marker="^", markersize=8, markevery=8640)
+    plt.plot(times_hours, skr_sim, label="DW (Simulation)", color="orange", linestyle="--", marker="o", markersize=8, markevery=8640)
+    plt.plot(times_hours, skr_plob_sim, label="PLOB (Simulation)", color="red", linestyle=":", marker="x", markersize=8, markevery=8640)
+    plt.plot(times_hours, skr_theory, label="DW (Theory)", color="green", marker="s", markersize=8, markevery=8640)
+    plt.plot(times_hours, skr_plob_theory, label="PLOB (Theory)", color="blue", linestyle="-.", marker="^", markersize=8, markevery=8640)
 
     plt.xlabel("Time (hours)")
     plt.ylabel("Maximum SKR (kbps)")

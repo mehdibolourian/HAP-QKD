@@ -335,7 +335,7 @@ def update_coordinates(method, hnodes, syst):
 #                 dir = "uplink"
 #             else: ## Downlink
 #                 dir = "downlink"
-#             eta_theory = [ts.channel_theory(direction=dir, gs_alt=0, balloon_alt=H_h[t], distance=d_los[t], n_correction=6) for t in syst.T]
+#             eta_theory = [ts.channel_theory(direction=dir, gs_alt=0, hap_alt=H_h[t], distance=d_los[t], n_correction=6) for t in syst.T]
 #             K_MAX[idx_l] = [ts.compute_skr(eta_theory[t]) for t in syst.T]
             
 #             sys.stdout.write("\rProcessing... " + str(idx_l))
@@ -404,15 +404,15 @@ def _compute_key_point(task):
 
     elif method == "theoretical":
         dir = "uplink" if isinstance(l.n1, gs) and isinstance(l.n2, hap) else "downlink"
-        eta_theory = ts.channel_theory(direction=dir, gs_alt=0, balloon_alt=H_h,
-                                       distance=d_los, n_correction=6)
+        eta_theory = ts.channel_theory(direction=dir, gs_alt=0, hap_alt=H_h,
+                                       distance=d_los, n_correction=6, params_in=ts.params)
         return idx_l, t, ts.compute_skr(eta_theory)
 
     elif method == "simulation":
         dir = "uplink" if isinstance(l.n1, gs) and isinstance(l.n2, hap) else "downlink"
         #eta_sim = ts.simulated_eff(distance=d_los, h_balloons=H_h, n=6)
-        eta_sim = ts.channel_simulation(direction=dir, gs_alt=0, balloon_alt=H_h,
-                                        distance=d_los, n_correction=6)
+        eta_sim = ts.channel_simulation(direction=dir, gs_alt=0, hap_alt=H_h,
+                                        distance=d_los, n_correction=6, params_in=ts.params)
         # print(f"eta_sim: {eta_sim}")
         return idx_l, t, ts.compute_skr(eta_sim)
 
@@ -566,7 +566,7 @@ def _compute_key_point(task):
 
 def calculate_key_rate(method, links, fog, rain, snow, syst,
                        start_time=0, end_time=None,
-                       max_workers=24,
+                       max_workers=10,
                        result_file="K_MAX_checkpoint.pkl"):
     """
     Compute and store K_MAX values between given time steps [start_time, end_time).
@@ -707,6 +707,212 @@ def calculate_key_rate(method, links, fog, rain, snow, syst,
     print(f"✅ Computation complete for interval {start_time}–{end_time-1}")
     return K_MAX, los_store
 
+def calculate_key_rate_mac(
+    method, links, fog, rain, snow, syst,
+    start_time=0, end_time=None,
+    max_workers=24,
+    result_file="K_MAX_checkpoint.pkl",
+    use_processes=False,   # ← IMPORTANT SWITCH
+):
+    """
+    macOS / Jupyter-safe parallel version.
+    Defaults to ThreadPoolExecutor.
+    """
+
+    num_links = len(links)
+    num_time_slots = len(syst.T)
+    if end_time is None:
+        end_time = num_time_slots
+
+    print(f"⏱️ Calculating K_MAX from t={start_time} to t={end_time-1}")
+
+    # =====================
+    # Load checkpoint
+    # =====================
+    K_MAX = [None] * num_links
+    fully_covered = True
+
+    if os.path.exists(result_file):
+        with open(result_file, "rb") as f:
+            K_MAX = pickle.load(f)
+        print(f"[INFO] Loaded checkpoint from {result_file}")
+
+        for idx_l in range(num_links):
+            if K_MAX[idx_l] is None or len(K_MAX[idx_l]) < end_time:
+                fully_covered = False
+                break
+            if any(K_MAX[idx_l][t] is None for t in range(start_time, end_time)):
+                fully_covered = False
+                break
+
+        if fully_covered:
+            print("✅ Requested interval fully covered.")
+            return K_MAX, None
+    else:
+        K_MAX = [None] * num_links
+        fully_covered = False
+
+    # =====================
+    # Build tasks
+    # =====================
+    tasks = []
+    for idx_l, l in enumerate(links):
+        if K_MAX[idx_l] is None:
+            K_MAX[idx_l] = [None] * num_time_slots
+        for t in range(start_time, end_time):
+            if K_MAX[idx_l][t] is None:
+                tasks.append((idx_l, t, l, syst, method, fog, rain, snow))
+
+    print(f"🧩 Tasks to compute: {len(tasks)}")
+
+    if not tasks:
+        print("✅ Nothing to compute.")
+        return K_MAX, None
+
+    # =====================
+    # Executor selection
+    # =====================
+    if use_processes:
+        print("⚠️ Using ProcessPoolExecutor (safe only in scripts, not notebooks)")
+        ctx = mp.get_context("spawn")
+        Executor = lambda: ProcessPoolExecutor(
+            max_workers=max_workers,
+            mp_context=ctx
+        )
+    else:
+        print("✅ Using ThreadPoolExecutor (macOS/Jupyter safe)")
+        Executor = lambda: ThreadPoolExecutor(max_workers=max_workers)
+
+    # =====================
+    # Parallel execution
+    # =====================
+    with Executor() as executor:
+        futures = executor.map(_compute_key_point, tasks, chunksize=10)
+
+        for idx_l, t, k_val in tqdm(
+            futures,
+            total=len(tasks),
+            desc="Computing key rates"
+        ):
+            if k_val is not None:
+                K_MAX[idx_l][t] = k_val
+
+    # =====================
+    # Save checkpoint
+    # =====================
+    with open(result_file, "wb") as f:
+        pickle.dump(K_MAX, f)
+    print(f"[INFO] Saved results to {result_file}")
+
+    # =====================
+    # Plot
+    # =====================
+    plt.figure(figsize=(10, 5))
+    for idx_l, vals in enumerate(K_MAX):
+        if vals is not None:
+            plt.plot(range(num_time_slots), vals, label=f"Link {idx_l}")
+
+    plt.xlabel("Time step")
+    plt.ylabel("K_MAX")
+    plt.title("Key Rate Evolution")
+    plt.legend(ncol=3, fontsize=8)
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
+    plt.show()
+
+    print("✅ Computation finished.")
+    return K_MAX, None
+
+def calculate_key_rate_sequential(
+    method, links, fog, rain, snow, syst,
+    start_time=0, end_time=None,
+    result_file="K_MAX_checkpoint.pkl",
+):
+    """
+    Fully sequential key-rate computation.
+    Safe on macOS, Jupyter, and for debugging.
+    """
+
+    num_links = len(links)
+    num_time_slots = len(syst.T)
+    if end_time is None:
+        end_time = num_time_slots
+
+    print(f"⏱️ Calculating K_MAX sequentially from t={start_time} to t={end_time-1}")
+
+    # =====================
+    # Load checkpoint
+    # =====================
+    K_MAX = [None] * num_links
+    fully_covered = True
+
+    if os.path.exists(result_file):
+        with open(result_file, "rb") as f:
+            K_MAX = pickle.load(f)
+        print(f"[INFO] Loaded checkpoint from {result_file}")
+
+        for idx_l in range(num_links):
+            if K_MAX[idx_l] is None or len(K_MAX[idx_l]) < end_time:
+                fully_covered = False
+                break
+            if any(K_MAX[idx_l][t] is None for t in range(start_time, end_time)):
+                fully_covered = False
+                break
+
+        if fully_covered:
+            print("✅ Requested interval fully covered.")
+            return K_MAX, None
+    else:
+        K_MAX = [None] * num_links
+
+    # =====================
+    # Sequential computation
+    # =====================
+    total_tasks = 0
+    for idx_l, l in enumerate(links):
+        if K_MAX[idx_l] is None:
+            K_MAX[idx_l] = [None] * num_time_slots
+
+        for t in range(start_time, end_time):
+            if K_MAX[idx_l][t] is not None:
+                continue
+
+            total_tasks += 1
+            _, _, k_val = _compute_key_point(
+                (idx_l, t, l, syst, method, fog, rain, snow)
+            )
+
+            if k_val is not None:
+                K_MAX[idx_l][t] = k_val
+
+    print(f"🧩 Total computed points: {total_tasks}")
+
+    # =====================
+    # Save checkpoint
+    # =====================
+    with open(result_file, "wb") as f:
+        pickle.dump(K_MAX, f)
+    print(f"[INFO] Saved results to {result_file}")
+
+    # =====================
+    # Plot
+    # =====================
+    plt.figure(figsize=(10, 5))
+    for idx_l, vals in enumerate(K_MAX):
+        if vals is not None:
+            plt.plot(range(num_time_slots), vals, label=f"Link {idx_l}")
+
+    plt.xlabel("Time step (t)")
+    plt.ylabel("K_MAX")
+    plt.title("Key Rate Evolution (Sequential)")
+    plt.legend(ncol=3, fontsize=8)
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
+    plt.show()
+
+    print("✅ Sequential computation finished.")
+    return K_MAX, None
+
 
 
 # def calculate_key_rate(method, links, fog, rain, snow, syst, 
@@ -833,7 +1039,7 @@ def generate_demands(gnodes, syst, mean_kbps=0.02, amp=0.5, noise_std=0.2, patte
 
         if pattern == "sinusoidal":
             # 24-hour periodic demand
-            return 1.0 + amp * math.sin(2 * math.pi * hr / 24.0)
+            return 1.0 + amp * math.sin(2 * math.pi * hr / 24.0 + math.pi)
         elif pattern == "piecewise":
             # morning ramp-up, day plateau, night low
             if hr < 6:   return 0.4
@@ -864,7 +1070,7 @@ def generate_demands(gnodes, syst, mean_kbps=0.02, amp=0.5, noise_std=0.2, patte
 
         k_vals = []
         for t in syst.T:
-            base = mean_kbps * dist_factor
+            base = mean_kbps * dist_factor * 1000
             temporal = diurnal(t)
             noise = 1.0 + random.gauss(0, noise_std)
             k_vals.append(max(1e-6, base * temporal * noise))  # ensure positive rate

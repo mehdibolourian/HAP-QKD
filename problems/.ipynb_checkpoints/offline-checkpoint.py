@@ -190,9 +190,9 @@ def offline(gss, haps, links, demands, f_qkp, problem):
             gp.quicksum(z[idx_l, idx_d, t]
                         for idx_l, l in enumerate(links)
                         for idx_d, d in enumerate(demands)
-                        if  l.n1 == n
-                       ) <= n.N_TX
-            for idx_n, n in enumerate(nodes)
+                        if  l.n1 == h
+                       ) <= h.N_TX
+            for idx_h, h in enumerate(haps)
             for t        in syst.T
         ), name="max_tx_connections"
     )
@@ -202,9 +202,9 @@ def offline(gss, haps, links, demands, f_qkp, problem):
             gp.quicksum(z[idx_l, idx_d, t]
                         for idx_l, l in enumerate(links)
                         for idx_d, d in enumerate(demands)
-                        if l.n2 == n
-                       ) <= n.N_RX
-            for idx_n, n in enumerate(nodes)
+                        if l.n2 == h
+                       ) <= h.N_RX
+            for idx_h, h in enumerate(haps)
             for t        in syst.T
         ), name="max_rx_connections"
     )
@@ -398,6 +398,7 @@ def offline(gss, haps, links, demands, f_qkp, problem):
     m.optimize()
 
     k_srv = 0
+    a_lst = 0
     if m.status == GRB.OPTIMAL:
         print("\n=========== OPTIMAL SOLUTION FOUND ===========")
 
@@ -439,7 +440,13 @@ def offline(gss, haps, links, demands, f_qkp, problem):
                     for t in syst.T
                    ) * syst.THETA
 
-        print(f"k_req: {k_req}, k_srv: {k_srv}")
+        a_lst = sum(sum(solution_all["a"][idx_l, t]
+                        for t in syst.T
+                       )
+                    for idx_l, l in enumerate(links)
+                   )
+
+        #print(f"k_req: {k_req}, k_srv: {k_srv}")
 
         # for idx_l, l in enumerate(links):
         #     for t in syst.T:
@@ -450,7 +457,7 @@ def offline(gss, haps, links, demands, f_qkp, problem):
         print("No optimal solution found.")
         solution_all = None
         
-    return solution_all, k_srv
+    return solution_all, k_srv, a_lst
 
 def offline_lp(gss, haps, links, demands, f_qkp, problem, Z):
     # Create Optimization Model
@@ -701,8 +708,9 @@ def offline_lp(gss, haps, links, demands, f_qkp, problem, Z):
     m.optimize()
 
     k_srv = 0
+    a_lst = 0
     if m.status == GRB.OPTIMAL:
-        print("\n=========== OPTIMAL SOLUTION FOUND ===========")
+        #print("\n=========== OPTIMAL SOLUTION FOUND ===========")
 
         # Store solutions as dict of numpy arrays
         solution_all = {
@@ -739,7 +747,13 @@ def offline_lp(gss, haps, links, demands, f_qkp, problem, Z):
                     for t in syst.T
                    ) * syst.THETA
 
-        print(f"k_req: {k_req}, k_srv: {k_srv}")
+        a_lst = sum(sum(solution_all["a"][idx_l, t]
+                        for t in syst.T
+                       )
+                    for idx_l, l in enumerate(links)
+                   )
+
+        #print(f"k_req: {k_req}, k_srv: {k_srv}")
 
         # for idx_l, l in enumerate(links):
         #     for t in syst.T:
@@ -750,7 +764,7 @@ def offline_lp(gss, haps, links, demands, f_qkp, problem, Z):
         print("No optimal solution found.")
         solution_all = None
         
-    return solution_all, k_srv
+    return solution_all, k_srv, a_lst
 
 def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
     # Create Optimization Model
@@ -815,12 +829,20 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
                           ) * syst.THETA, GRB.MAXIMIZE
                       )
 
-    # ### Tuning the accuracy and convergence of the solver
-    # m.setParam("MIPGap", 1e-4)
-    # m.setParam("MIPGapAbs", 1e-4)
-    # m.setParam("FeasibilityTol", 1e-4)
-    # m.setParam("IntFeasTol", 1e-4)
-    # m.setParam("OptimalityTol", 1e-4)
+    m.Params.Method = 2        # Barrier
+    m.Params.Crossover = 0    # Skip crossover (LP only!)
+
+    m.Params.Presolve = 2
+    m.Params.Cuts = 0
+    m.Params.Heuristics = 0
+    m.Params.MIPFocus = 0
+
+    ### Tuning the accuracy and convergence of the solver
+    m.setParam("MIPGap", 1e-2)
+    m.setParam("MIPGapAbs", 1e-2)
+    m.setParam("FeasibilityTol", 1e-2)
+    m.setParam("IntFeasTol", 1e-2)
+    m.setParam("OptimalityTol", 1e-2)
 
     # m.Params.Presolve = 2
     # m.Params.Method = 2
@@ -851,9 +873,9 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
             gp.quicksum(z[idx_l, idx_d, t]
                         for idx_l, l in enumerate(links)
                         for idx_d, d in enumerate(demands)
-                        if  l.n1 == n
-                       ) <= n.N_TX
-            for idx_n, n in enumerate(nodes)
+                        if  l.n1 == h
+                       ) <= h.N_TX
+            for idx_h, h in enumerate(haps)
             for t        in syst.T
         ), name="max_tx_connections"
     )
@@ -863,9 +885,9 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
             gp.quicksum(z[idx_l, idx_d, t]
                         for idx_l, l in enumerate(links)
                         for idx_d, d in enumerate(demands)
-                        if l.n2 == n
-                       ) <= n.N_RX
-            for idx_n, n in enumerate(nodes)
+                        if l.n2 == h
+                       ) <= h.N_RX
+            for idx_h, h in enumerate(haps)
             for t        in syst.T
         ), name="max_rx_connections"
     )
@@ -1059,6 +1081,7 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
     m.optimize()
 
     k_srv = 0
+    a_lst = 0
     if m.status == GRB.OPTIMAL:
         print("\n=========== OPTIMAL SOLUTION FOUND ===========")
 
@@ -1100,7 +1123,13 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
                     for t in syst.T
                    ) * syst.THETA
 
-        print(f"k_req: {k_req}, k_srv: {k_srv}")
+        a_lst = sum(sum(solution_all["a"][idx_l, t]
+                        for t in syst.T
+                       )
+                    for idx_l, l in enumerate(links)
+                   )
+
+        #print(f"k_req: {k_req}, k_srv: {k_srv}")
 
         # for idx_l, l in enumerate(links):
         #     for t in syst.T:
@@ -1111,4 +1140,4 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
         print("No optimal solution found.")
         solution_all = None
         
-    return solution_all, k_srv
+    return solution_all, k_srv, a_lst

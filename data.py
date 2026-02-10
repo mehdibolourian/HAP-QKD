@@ -32,6 +32,11 @@ class link(): ## HAP-Ground Station Link
         self.V     = V     # Visibility in km (For each time step)
         self.W     = W     # Weather condition (For each time step) (fog, rain, snow)
         self.K_MAX = K_MAX # Max link capacities at each time slot
+
+class path(): ## 1-Hop Path (GS-HAP-GS)
+    def __init__(self, l1, l2):
+        self.l1    = l1     # Link for GS to HAP
+        self.l2    = l2     # Link for HAP to GS
         
 class system(): ## Other System-Wide Parameters
     def __init__(self, T, THETA, G):
