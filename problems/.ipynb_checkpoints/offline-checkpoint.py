@@ -154,6 +154,11 @@ def offline(gss, haps, links, demands, f_qkp, problem):
                           ) * syst.THETA, GRB.MAXIMIZE
                       )
 
+    m.Params.MIPGap = 0.01      # 1% optimality
+    m.Params.MIPFocus = 1       # focus on finding feasible solutions
+    m.Params.Heuristics = 0.5   # increase heuristics
+    m.Params.Cuts = 1           # reduce cut aggressiveness
+
     # ### Tuning the accuracy and convergence of the solver
     # m.setParam("MIPGap", 1e-2)
     # m.setParam("MIPGapAbs", 1e-2)
@@ -400,7 +405,7 @@ def offline(gss, haps, links, demands, f_qkp, problem):
     k_srv = 0
     a_lst = 0
     if m.status == GRB.OPTIMAL:
-        print("\n=========== OPTIMAL SOLUTION FOUND ===========")
+        # print("\n=========== OPTIMAL SOLUTION FOUND ===========")
 
         # Store solutions as dict of numpy arrays
         solution_all = {
@@ -424,8 +429,8 @@ def offline(gss, haps, links, demands, f_qkp, problem):
         r_total = {k: solution_all["r_1"].get(k, 0) + solution_all["r_2"].get(k, 0)
            for k in set(solution_all["r_1"]) | set(solution_all["r_2"])}
 
-        plot_z_timeline(solution_all["z"], links, demands)
-        plot_z_timeline(r_total, links, demands)
+        # plot_z_timeline(solution_all["z"], links, demands)
+        # plot_z_timeline(r_total, links, demands)
 
         # pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
         # pp.pprint(solution_filtered)
@@ -838,11 +843,11 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
     m.Params.MIPFocus = 0
 
     ### Tuning the accuracy and convergence of the solver
-    m.setParam("MIPGap", 1e-2)
-    m.setParam("MIPGapAbs", 1e-2)
-    m.setParam("FeasibilityTol", 1e-2)
-    m.setParam("IntFeasTol", 1e-2)
-    m.setParam("OptimalityTol", 1e-2)
+    m.setParam("MIPGap", 1e-4)
+    m.setParam("MIPGapAbs", 1e-4)
+    m.setParam("FeasibilityTol", 1e-4)
+    m.setParam("IntFeasTol", 1e-4)
+    m.setParam("OptimalityTol", 1e-4)
 
     # m.Params.Presolve = 2
     # m.Params.Method = 2
@@ -1083,7 +1088,7 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
     k_srv = 0
     a_lst = 0
     if m.status == GRB.OPTIMAL:
-        print("\n=========== OPTIMAL SOLUTION FOUND ===========")
+        # print("\n=========== OPTIMAL SOLUTION FOUND ===========")
 
         # Store solutions as dict of numpy arrays
         solution_all = {

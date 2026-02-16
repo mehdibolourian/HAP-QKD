@@ -2,23 +2,23 @@ from libraries import *
 
 def online_new(gss, haps, links, state, action, t, f_qkp):
     demands = state[t]["demands"]
-
-    A       = state[t]["a"]
     z       = action[t]
 
-    A_next  = A.copy()
+    if f_qkp:
+        A       = state[t]["a"]
+        A_next  = A.copy()
 
     # print(f"z: {z}")
     # print(f"A: {A}")
 
-    reward  = -10
+    reward  = -2
     
     # Create Optimization Model
     m = gp.Model("hap-qkd")
     
     ## Decision Variables
     # Dictionaries of decision variables instead of MVar arrays
-    r_1, r_2, r_h, a = {}, {}, {}, {}
+    r_1, r_2, r_h, a, o = {}, {}, {}, {}, {}
 
     for idx_l, l in enumerate(links):
         for idx_d, d in enumerate(demands):
@@ -36,35 +36,38 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
 
     nodes = gss + haps
 
-    m.ModelSense = GRB.MAXIMIZE
+    # ## Node order variable --> To prevent subtours
+    # for idx_n, n in enumerate(nodes):
+    #     for idx_d, d in enumerate(demands):
+    #         o[idx_n, idx_d] = m.addVar(name=f"o_{idx_n}_{idx_d}", vtype=GRB.CONTINUOUS)
 
-    # Primary objective: maximize demand satisfaction
-    m.setObjectiveN(gp.quicksum(r_h[idx_d]
-                                for idx_d, d in enumerate(demands)
-                               ), index=0, priority=2, weight=1.0, abstol=1e-2, reltol=1e-2, name="Primary")
-    
-    # Secondary objective: maximize keys served
-    m.setObjectiveN(gp.quicksum(a[idx_l]
-                                for idx_l, l in enumerate(links)
-                               ), index=1, priority=1, weight=1.0, abstol=1e-2, reltol=1e-2, name="Secondary")
+    m.setObjective(sum(r_h[idx_d]
+                       for idx_d, d in enumerate(demands)
+                      ) * syst.THETA, GRB.MAXIMIZE
+                  )
 
-    ### Tuning the accuracy and convergence of the solver
-    m.setParam("MIPGap", 1e-2)
-    m.setParam("MIPGapAbs", 1e-2)
-    m.setParam("FeasibilityTol", 1e-2)
-    m.setParam("IntFeasTol", 1e-2)
-    m.setParam("OptimalityTol", 1e-2)
+    m.Params.MIPGap = 0.01      # 1% optimality
+    m.Params.MIPFocus = 1       # focus on finding feasible solutions
+    m.Params.Heuristics = 0.5   # increase heuristics
+    m.Params.Cuts = 1           # reduce cut aggressiveness
 
-    m.Params.Presolve = 2
-    m.Params.Method = 2
-    m.Params.Cuts = 2
-    m.Params.Heuristics = 0.25
-    m.Params.MIPFocus = 1
-    m.Params.NumericFocus = 1
-    m.Params.Threads = 0
-    m.Params.NodefileStart = 0.5
-    m.Params.NoRelHeurTime = 20
-    m.Params.ConcurrentMIP = 1
+    # ### Tuning the accuracy and convergence of the solver
+    # m.setParam("MIPGap", 1e-2)
+    # m.setParam("MIPGapAbs", 1e-2)
+    # m.setParam("FeasibilityTol", 1e-2)
+    # m.setParam("IntFeasTol", 1e-2)
+    # m.setParam("OptimalityTol", 1e-2)
+
+    # m.Params.Presolve = 2
+    # m.Params.Method = 2
+    # m.Params.Cuts = 2
+    # m.Params.Heuristics = 0.25
+    # m.Params.MIPFocus = 1
+    # m.Params.NumericFocus = 1
+    # m.Params.Threads = 0
+    # m.Params.NodefileStart = 0.5
+    # m.Params.NoRelHeurTime = 20
+    # m.Params.ConcurrentMIP = 1
 
     ## Constraints
     # Maximum Link Capacity --> Enforces only r_1
@@ -118,6 +121,29 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         ),
         name="flow_conservation_3"
     )
+
+    # # MTZ subtour elimination --> Eliminates pointless single/multi-hop loops in the flows --> Uses an ordering values for all nodes
+    # # --> The order values should only increase on the path --> A decrease in order value == a loop (X)
+    # M = len(nodes)
+    # m.addConstrs(
+    #     (
+    #         o[nodes.index(l.n2), idx_d] >= o[nodes.index(l.n1), idx_d] + 1 - M * (1 - z[idx_l])
+    #         for idx_l, l in enumerate(links)
+    #         for idx_d, d in enumerate(demands)
+    #     ), name="ordering_constraint_1"
+    # )
+    # m.addConstrs(
+    #     (
+    #         o[nodes.index(d.n1), idx_d] == 1
+    #         for idx_d, d in enumerate(demands)
+    #     ), name="ordering_constraint_2"
+    # )
+    # m.addConstrs(
+    #     (
+    #         o[nodes.index(d.n2), idx_d] == M
+    #         for idx_d, d in enumerate(demands)
+    #     ), name="ordering_constraint_2"
+    # )
 
     # Demand-level and link-level key rate coordination (Note that r_h is a part of the maximization objective)
     m.addConstrs(
@@ -233,16 +259,31 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
 
         #print(f"k_req: {k_req}, k_srv: {k_srv}")
 
-        Obj_REQ = sum(d.K_REQ[idx_d]
+        Obj_REQ = sum(d.K_REQ[t]
                      for idx_d, d in enumerate(demands)
-                    )
-        if m.ObjVal < 0.99 * Obj_REQ:
-            reward = m.ObjVal / Obj_REQ
-        else:
-            reward = 10
+                    ) * syst.THETA
+        # if m.ObjVal < 0.99 * Obj_REQ:
+        reward = m.ObjVal / Obj_REQ
+        # else:
+        #     reward = 10
 
-        A_next = {k: A.get(k, 0) + solution_all["a"].get(k, 0)
-           for k in set(solution_all["a"])}
+        # reward = 0
+        # for idx_d, d in enumerate(demands):
+        #     if solution_all["r_h"][idx_d] >= 0.99 * d.K_REQ[t]:
+        #         reward += 10
+        #     else:
+        #         reward += solution_all["r_h"][idx_d] / d.K_REQ[t]
+
+        # reward = reward / len(demands)
+
+        #print(f"reward: {reward}")
+
+        if f_qkp:
+            A_next = {k: A.get(k, 0) + solution_all["a"].get(k, 0)
+               for k in set(solution_all["a"])}
+        else:
+            A_next = {k: solution_all["a"].get(k, 0)
+               for k in set(solution_all["a"])}
     else:
         #print("No optimal solution found.")
         solution_all = {
