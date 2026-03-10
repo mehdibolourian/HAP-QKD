@@ -1039,7 +1039,7 @@ def generate_demands(gnodes, syst, mean_kbps=0.02, amp=0.5, noise_std=0.2, patte
 
         if pattern == "sinusoidal":
             # 24-hour periodic demand
-            return 1.0 + amp * math.sin(2 * math.pi * hr / 24.0 + math.pi)
+            return 1.0 + amp * math.sin(2 * math.pi * (hr - 10) / 24.0) #1.0 + amp * math.sin(2 * math.pi * hr / 24.0 + math.pi)
         elif pattern == "piecewise":
             # morning ramp-up, day plateau, night low
             if hr < 6:   return 0.4
@@ -1047,6 +1047,9 @@ def generate_demands(gnodes, syst, mean_kbps=0.02, amp=0.5, noise_std=0.2, patte
             if hr < 18:  return 1.0
             if hr < 22:  return 0.6
             return 0.3
+        elif pattern == "stadium": # "Stadium" shape: Steep rise at 8am, plateau, drop at 8pm
+            # Using a high-power sine to flatten the peak
+            return 1.0 + amp * np.power(np.sin(math.pi * hr / 24.0), 4)
         else:
             return 1.0
 

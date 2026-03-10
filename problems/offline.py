@@ -91,7 +91,7 @@ def plot_z_timeline(z, links, demands, figsize=(9,3)):
     plt.show()
 
 
-def offline(gss, haps, links, demands, f_qkp, problem):
+def offline(gss, haps, links, demands, f_qkp, problem, demand_active, link_active):
     # Create Optimization Model
     m = gp.Model("hap-qkd")
     
@@ -102,13 +102,24 @@ def offline(gss, haps, links, demands, f_qkp, problem):
     for idx_l, l in enumerate(links):
         for idx_d, d in enumerate(demands):
             for t in syst.T:
-                r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
-                r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+                # demand_active is np.ones(MAX_DEMANDS), so we check the idx_d
+                is_active = (demand_active[idx_d][t] == 1)
+                
+                # If inactive, we'll force ub to 0.0 later or set it here
+                upper_bound = d.K_REQ[t] * KEY_RATE_SCALE if is_active else 0.0
+                
+                r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
+                r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
                 z[idx_l, idx_d, t]   = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}",   vtype=GRB.BINARY)
                 
     for idx_d, d in enumerate(demands):
         for t in syst.T:
-            r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+            # demand_active is np.ones(MAX_DEMANDS), so we check the idx_d
+            is_active = (demand_active[idx_d][t] == 1)
+            
+            # If inactive, we'll force ub to 0.0 later or set it here
+            upper_bound = d.K_REQ[t] * KEY_RATE_SCALE if is_active else 0.0
+            r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
             
     for idx_l, l in enumerate(links):
         for t in syst.T:
@@ -178,6 +189,29 @@ def offline(gss, haps, links, demands, f_qkp, problem):
     # m.Params.ConcurrentMIP = 1
 
     ## Constraints
+    # --- NEW: Explicitly zero out flows for inactive demands ---
+    # This prevents the solver from using links for demands that aren't "there"
+    for idx_d, d in enumerate(demands):
+        for t in syst.T:
+            if demand_active[idx_d][t] == 0:
+                m.addConstr(r_h[idx_d,t] == 0, name=f"mask_rh_{idx_d}_{t}")
+                for idx_l in range(len(links)):
+                    m.addConstr(r_1[idx_l, idx_d, t] == 0, name=f"mask_r1_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(r_2[idx_l, idx_d, t] == 0, name=f"mask_r2_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(z[idx_l, idx_d, t]   == 0, name=f"mask_z__{idx_l}_{idx_d}_{t}")
+
+    ## --- NEW: Explicitly zero out flows for inactive links ---
+    for idx_l, l in enumerate(links):
+        for t in syst.T:
+            if link_active[idx_l][t] == 0:
+                # Force storage growth to zero for this link
+                m.addConstr(a[idx_l, t] == 0, name=f"mask_a_link_{idx_l}_{t}")
+                for idx_d in range(len(demands)):
+                    # Force all flow (direct and from storage) to zero for this link-demand pair
+                    m.addConstr(r_1[idx_l, idx_d, t] == 0, name=f"mask_r1_link_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(r_2[idx_l, idx_d, t] == 0, name=f"mask_r2_link_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(z[idx_l, idx_d, t]   == 0, name=f"mask_z__{idx_l}_{idx_d}_{t}")
+    
     # Maximum Link Capacity --> Enforces only r_1
     m.addConstrs(
         (
@@ -464,7 +498,7 @@ def offline(gss, haps, links, demands, f_qkp, problem):
         
     return solution_all, k_srv, a_lst
 
-def offline_lp(gss, haps, links, demands, f_qkp, problem, Z):
+def offline_lp(gss, haps, links, demands, f_qkp, problem, Z, demand_active, link_active):
     # Create Optimization Model
     m = gp.Model("hap-qkd")
     
@@ -475,12 +509,23 @@ def offline_lp(gss, haps, links, demands, f_qkp, problem, Z):
     for idx_l, l in enumerate(links):
         for idx_d, d in enumerate(demands):
             for t in syst.T:
-                r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
-                r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+                # demand_active is np.ones(MAX_DEMANDS), so we check the idx_d
+                is_active = (demand_active[idx_d][t] == 1)
+                
+                # If inactive, we'll force ub to 0.0 later or set it here
+                upper_bound = d.K_REQ[t] * KEY_RATE_SCALE if is_active else 0.0
+                
+                r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
+                r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
                 
     for idx_d, d in enumerate(demands):
         for t in syst.T:
-            r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+            # demand_active is np.ones(MAX_DEMANDS), so we check the idx_d
+            is_active = (demand_active[idx_d][t] == 1)
+            
+            # If inactive, we'll force ub to 0.0 later or set it here
+            upper_bound = d.K_REQ[t] * KEY_RATE_SCALE if is_active else 0.0
+            r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
             
     for idx_l, l in enumerate(links):
         for t in syst.T:
@@ -539,6 +584,27 @@ def offline_lp(gss, haps, links, demands, f_qkp, problem, Z):
     # m.Params.ConcurrentMIP = 1
 
     ## Constraints
+    # --- NEW: Explicitly zero out flows for inactive demands ---
+    # This prevents the solver from using links for demands that aren't "there"
+    for idx_d, d in enumerate(demands):
+        for t in syst.T:
+            if demand_active[idx_d][t] == 0:
+                m.addConstr(r_h[idx_d,t] == 0, name=f"mask_rh_{idx_d}_{t}")
+                for idx_l in range(len(links)):
+                    m.addConstr(r_1[idx_l, idx_d, t] == 0, name=f"mask_r1_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(r_2[idx_l, idx_d, t] == 0, name=f"mask_r2_{idx_l}_{idx_d}_{t}")
+
+    ## --- NEW: Explicitly zero out flows for inactive links ---
+    for idx_l, l in enumerate(links):
+        for t in syst.T:
+            if link_active[idx_l][t] == 0:
+                # Force storage growth to zero for this link
+                m.addConstr(a[idx_l, t] == 0, name=f"mask_a_link_{idx_l}_{t}")
+                for idx_d in range(len(demands)):
+                    # Force all flow (direct and from storage) to zero for this link-demand pair
+                    m.addConstr(r_1[idx_l, idx_d, t] == 0, name=f"mask_r1_link_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(r_2[idx_l, idx_d, t] == 0, name=f"mask_r2_link_{idx_l}_{idx_d}_{t}")
+    
     # Maximum Link Capacity --> Enforces only r_1
     m.addConstrs(
         (
@@ -771,7 +837,7 @@ def offline_lp(gss, haps, links, demands, f_qkp, problem, Z):
         
     return solution_all, k_srv, a_lst
 
-def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
+def offline_relaxed(gss, haps, links, demands, f_qkp, problem, demand_active, link_active):
     # Create Optimization Model
     m = gp.Model("hap-qkd")
     
@@ -782,13 +848,24 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
     for idx_l, l in enumerate(links):
         for idx_d, d in enumerate(demands):
             for t in syst.T:
-                r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
-                r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
-                z[idx_l, idx_d, t]   = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}",   vtype=GRB.CONTINUOUS, lb=0.0, ub=1)
+                # demand_active is np.ones(MAX_DEMANDS), so we check the idx_d
+                is_active = (demand_active[idx_d][t] == 1)
+                
+                # If inactive, we'll force ub to 0.0 later or set it here
+                upper_bound = d.K_REQ[t] * KEY_RATE_SCALE if is_active else 0.0
+                
+                r_1[idx_l, idx_d, t] = m.addVar(name=f"r_1_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
+                r_2[idx_l, idx_d, t] = m.addVar(name=f"r_2_{idx_l}_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
+                z[idx_l, idx_d, t]   = m.addVar(name=f"z_{idx_l}_{idx_d}_{t}",   vtype=GRB.CONTINUOUS, lb=0.0, ub=is_active)
                 
     for idx_d, d in enumerate(demands):
         for t in syst.T:
-            r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+            # demand_active is np.ones(MAX_DEMANDS), so we check the idx_d
+            is_active = (demand_active[idx_d][t] == 1)
+            
+            # If inactive, we'll force ub to 0.0 later or set it here
+            upper_bound = d.K_REQ[t] * KEY_RATE_SCALE if is_active else 0.0
+            r_h[idx_d, t] = m.addVar(name=f"r_h_{idx_d}_{t}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
             
     for idx_l, l in enumerate(links):
         for t in syst.T:
@@ -861,6 +938,30 @@ def offline_relaxed(gss, haps, links, demands, f_qkp, problem):
     # m.Params.ConcurrentMIP = 1
 
     ## Constraints
+    # --- NEW: Explicitly zero out flows for inactive demands ---
+    # This prevents the solver from using links for demands that aren't "there"
+    for idx_d, d in enumerate(demands):
+        for t in syst.T:
+            if demand_active[idx_d][t] == 0:
+                m.addConstr(r_h[idx_d,t] == 0, name=f"mask_rh_{idx_d}_{t}")
+                for idx_l in range(len(links)):
+                    m.addConstr(r_1[idx_l, idx_d, t] == 0, name=f"mask_r1_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(r_2[idx_l, idx_d, t] == 0, name=f"mask_r2_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(z[idx_l, idx_d, t]   == 0, name=f"mask_z__{idx_l}_{idx_d}_{t}")
+
+    ## --- NEW: Explicitly zero out flows for inactive links ---
+    for idx_l, l in enumerate(links):
+        for t in syst.T:
+            if link_active[idx_l][t] == 0:
+                # Force storage growth to zero for this link
+                m.addConstr(a[idx_l, t] == 0, name=f"mask_a_link_{idx_l}_{t}")
+                for idx_d in range(len(demands)):
+                    # Force all flow (direct and from storage) to zero for this link-demand pair
+                    m.addConstr(r_1[idx_l, idx_d, t] == 0, name=f"mask_r1_link_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(r_2[idx_l, idx_d, t] == 0, name=f"mask_r2_link_{idx_l}_{idx_d}_{t}")
+                    m.addConstr(z[idx_l, idx_d, t]   == 0, name=f"mask_z__{idx_l}_{idx_d}_{t}")
+
+    
     # Maximum Link Capacity --> Enforces only r_1
     m.addConstrs(
         (

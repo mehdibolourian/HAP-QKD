@@ -29,6 +29,7 @@ import matplotlib.ticker     as     ticker
 import torch.nn              as     nn
 import torch.optim           as     optim
 import torch.nn.functional   as     F
+from   torch.distributions   import Categorical
 import gymnasium             as     gym
 from   gurobipy              import GRB
 from   collections           import Counter

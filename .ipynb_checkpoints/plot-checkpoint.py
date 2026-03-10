@@ -75,7 +75,6 @@ def plob_skr_kbps(eta, ts):
         -ts.ratesources
         * ts.sourceeff
         * math.log1p(-eta) / math.log(2)
-        / 1e3
     )
 
 def geometric_eta(distance_km, ts):
@@ -325,7 +324,7 @@ def plot_skr_distance(d_min=25, d_max=250):
 
         # ---------- Fiber ----------
         alpha_low  = 0.16  # dB/km
-        alpha_high = 0.28   # dB/km
+        alpha_high = 0.2   # dB/km
 
         loss_low  = alpha_low  * math.sqrt(d**2 - 25**2) + 3 + 0.15 * 2 + 0.50 * 2
         loss_high = alpha_high * math.sqrt(d**2 - 25**2) + 3 + 0.30 * 2 + 0.75 * 2
@@ -343,7 +342,6 @@ def plot_skr_distance(d_min=25, d_max=250):
         eta_geo = geometric_eta(d, ts)
 
         hap_geo_dw.append(ts.compute_skr(eta_geo))
-        hap_geo_plob.append(plob_skr_kbps(eta_geo, ts))
 
     # =========================
     # Plot 1: DW bounds
@@ -510,7 +508,7 @@ def plot_connectivity_graph_3d(
     and a transparent vertical cylinder.
     """
 
-    fig = plt.figure(figsize=(3, 3))
+    fig = plt.figure(figsize=(4, 4))
     ax = fig.add_subplot(111, projection="3d")
 
     # ==========================
@@ -620,7 +618,7 @@ def plot_connectivity_graph_3d(
     # ==========================
     # View angle (important)
     # ==========================
-    ax.view_init(elev=25, azim=100)
+    ax.view_init(elev=15, azim=135)
 
     plt.tight_layout()
     plt.savefig("hap_qkd_trajectory_3d.pdf", format="pdf", bbox_inches="tight", pad_inches=0.01, transparent="True")
@@ -728,9 +726,9 @@ def plot_skr_eta_stratotegic_real(n=6, d_min_t=0, d_max_t=86400):
 
             results.append({
                 "d": d,
-                "eta_t": eta_t,
+                "eta_t": eta_t * 100,
                 #"eta_s": eta_s,
-                "skr_t": skr_t,
+                "skr_t": skr_t / 1e6,
                 #"skr_s": skr_s,
             })
     
@@ -760,7 +758,7 @@ def plot_skr_eta_stratotegic_real(n=6, d_min_t=0, d_max_t=86400):
     plt.ylabel("SKR (Mbps)", fontsize=12)
     plt.grid(True)
     plt.legend(fontsize=12)
-    plt.savefig("skr_strato.svg", format="svg", dpi=300, bbox_inches="tight")
+    plt.savefig("skr_strato.pdf", format='pdf', transparent=True, bbox_inches='tight', pad_inches=0.01)
     plt.show()
 
     # Plot
@@ -770,7 +768,7 @@ def plot_skr_eta_stratotegic_real(n=6, d_min_t=0, d_max_t=86400):
     plt.xlabel("Time (hours)", fontsize=12)
     plt.ylabel("Distance (km)", fontsize=12)
     plt.grid(True)
-    plt.savefig("distance_strato.svg", format="svg", dpi=300, bbox_inches="tight")
+    plt.savefig("distance_strato.pdf", format='pdf', transparent=True, bbox_inches='tight', pad_inches=0.01)
     plt.show()
 
 def plot_solution(solution):

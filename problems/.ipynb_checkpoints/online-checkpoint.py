@@ -1,8 +1,10 @@
 from libraries import *
 
-def online_new(gss, haps, links, state, action, t, f_qkp):
+def online_new(gss, haps, links, state, action, t, f_qkp, k_srv_heur1, k_srv_heur2, demand_active, link_active):
     demands = state[t]["demands"]
-    z       = action[t]
+    z       = action
+
+    #print(z)
 
     if f_qkp:
         A       = state[t]["a"]
@@ -11,7 +13,7 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
     # print(f"z: {z}")
     # print(f"A: {A}")
 
-    reward  = -2
+    reward  = -100
     
     # Create Optimization Model
     m = gp.Model("hap-qkd")
@@ -20,13 +22,19 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
     # Dictionaries of decision variables instead of MVar arrays
     r_1, r_2, r_h, a, o = {}, {}, {}, {}, {}
 
-    for idx_l, l in enumerate(links):
-        for idx_d, d in enumerate(demands):
-            r_1[idx_l, idx_d] = m.addVar(name=f"r_1_{idx_l}_{idx_d}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
-            r_2[idx_l, idx_d] = m.addVar(name=f"r_2_{idx_l}_{idx_d}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
-                
     for idx_d, d in enumerate(demands):
-        r_h[idx_d] = m.addVar(name=f"r_h_{idx_d}", vtype=GRB.CONTINUOUS, lb=0.0, ub=d.K_REQ[t] * KEY_RATE_SCALE)
+        # NEW: Check if this specific demand is active
+        # demand_active is np.ones(MAX_DEMANDS), so we check the idx_d
+        is_active = (demand_active[idx_d][t] == 1)
+        
+        # If inactive, we'll force ub to 0.0 later or set it here
+        upper_bound = d.K_REQ[t] * KEY_RATE_SCALE if is_active else 0.0
+        
+        r_h[idx_d] = m.addVar(name=f"r_h_{idx_d}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
+        
+        for idx_l, l in enumerate(links):
+            r_1[idx_l, idx_d] = m.addVar(name=f"r_1_{idx_l}_{idx_d}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
+            r_2[idx_l, idx_d] = m.addVar(name=f"r_2_{idx_l}_{idx_d}", vtype=GRB.CONTINUOUS, lb=0.0, ub=upper_bound)
 
     K_MAX_SUM = sum(l.K_MAX[tp]
                     for tp in range(t+1)
@@ -36,17 +44,18 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
 
     nodes = gss + haps
 
-    # ## Node order variable --> To prevent subtours
-    # for idx_n, n in enumerate(nodes):
-    #     for idx_d, d in enumerate(demands):
-    #         o[idx_n, idx_d] = m.addVar(name=f"o_{idx_n}_{idx_d}", vtype=GRB.CONTINUOUS)
+    ## Node order variable --> To prevent subtours
+    for idx_n, n in enumerate(nodes):
+        for idx_d, d in enumerate(demands):
+            o[idx_n, idx_d] = m.addVar(name=f"o_{idx_n}_{idx_d}", vtype=GRB.CONTINUOUS)
 
     m.setObjective(sum(r_h[idx_d]
                        for idx_d, d in enumerate(demands)
+                       if demand_active[idx_d][t] == 1
                       ) * syst.THETA, GRB.MAXIMIZE
                   )
 
-    m.Params.MIPGap = 0.01      # 1% optimality
+    m.Params.MIPGap = 0.001     # 1% optimality
     m.Params.MIPFocus = 1       # focus on finding feasible solutions
     m.Params.Heuristics = 0.5   # increase heuristics
     m.Params.Cuts = 1           # reduce cut aggressiveness
@@ -70,6 +79,27 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
     # m.Params.ConcurrentMIP = 1
 
     ## Constraints
+    # --- NEW: Explicitly zero out flows for inactive demands ---
+    # This prevents the solver from using links for demands that aren't "there"
+    for idx_d, d in enumerate(demands):
+        if demand_active[idx_d][t] == 0:
+            m.addConstr(r_h[idx_d] == 0, name=f"mask_rh_{idx_d}")
+            for idx_l in range(len(links)):
+                m.addConstr(r_1[idx_l, idx_d] == 0, name=f"mask_r1_{idx_l}_{idx_d}")
+                m.addConstr(r_2[idx_l, idx_d] == 0, name=f"mask_r2_{idx_l}_{idx_d}")
+
+    ## --- NEW: Explicitly zero out flows for inactive links ---
+    for idx_l, l in enumerate(links):
+        if link_active[idx_l][t] == 0:
+            # Force storage growth to zero for this link
+            m.addConstr(a[idx_l] == 0, name=f"mask_a_link_{idx_l}")
+            
+            for idx_d in range(len(demands)):
+                # Force all flow (direct and from storage) to zero for this link-demand pair
+                m.addConstr(r_1[idx_l, idx_d] == 0, name=f"mask_r1_link_{idx_l}_d_{idx_d}")
+                m.addConstr(r_2[idx_l, idx_d] == 0, name=f"mask_r2_link_{idx_l}_d_{idx_d}")
+
+    
     # Maximum Link Capacity --> Enforces only r_1
     m.addConstrs(
         (
@@ -122,28 +152,28 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         name="flow_conservation_3"
     )
 
-    # # MTZ subtour elimination --> Eliminates pointless single/multi-hop loops in the flows --> Uses an ordering values for all nodes
-    # # --> The order values should only increase on the path --> A decrease in order value == a loop (X)
-    # M = len(nodes)
-    # m.addConstrs(
-    #     (
-    #         o[nodes.index(l.n2), idx_d] >= o[nodes.index(l.n1), idx_d] + 1 - M * (1 - z[idx_l])
-    #         for idx_l, l in enumerate(links)
-    #         for idx_d, d in enumerate(demands)
-    #     ), name="ordering_constraint_1"
-    # )
-    # m.addConstrs(
-    #     (
-    #         o[nodes.index(d.n1), idx_d] == 1
-    #         for idx_d, d in enumerate(demands)
-    #     ), name="ordering_constraint_2"
-    # )
-    # m.addConstrs(
-    #     (
-    #         o[nodes.index(d.n2), idx_d] == M
-    #         for idx_d, d in enumerate(demands)
-    #     ), name="ordering_constraint_2"
-    # )
+    # MTZ subtour elimination --> Eliminates pointless single/multi-hop loops in the flows --> Uses an ordering values for all nodes
+    # --> The order values should only increase on the path --> A decrease in order value == a loop (X)
+    M = len(nodes)
+    m.addConstrs(
+        (
+            o[nodes.index(l.n2), idx_d] >= o[nodes.index(l.n1), idx_d] + 1 - M * (1 - z[idx_d][idx_l])
+            for idx_l, l in enumerate(links)
+            for idx_d, d in enumerate(demands)
+        ), name="ordering_constraint_1"
+    )
+    m.addConstrs(
+        (
+            o[nodes.index(d.n1), idx_d] == 1
+            for idx_d, d in enumerate(demands)
+        ), name="ordering_constraint_2"
+    )
+    m.addConstrs(
+        (
+            o[nodes.index(d.n2), idx_d] == M
+            for idx_d, d in enumerate(demands)
+        ), name="ordering_constraint_2"
+    )
 
     # Demand-level and link-level key rate coordination (Note that r_h is a part of the maximization objective)
     m.addConstrs(
@@ -154,18 +184,10 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         ), name="demand_link_coordination_1"
     )
 
-    # # Key rate and routing coordination (1)
-    # m.addConstrs(
-    #     (
-    #         r_1[idx_l, idx_d] >= 1e-1 * z[idx_l, idx_d]
-    #         for idx_l, l in enumerate(links)
-    #         for idx_d, d in enumerate(demands)
-    #     ), name="key_rate_routing_coordination_1"
-    # )
     # Key rate and routing coordination (2)
     m.addConstrs(
         (
-            r_1[idx_l, idx_d] <= d.K_REQ[t] * KEY_RATE_SCALE * z[idx_l]
+            r_1[idx_l, idx_d] <= d.K_REQ[t] * KEY_RATE_SCALE * z[idx_d][idx_l] #z[idx_l]
             for idx_l, l in enumerate(links)
             for idx_d, d in enumerate(demands)
         ), name="key_rate_routing_coordination_2"
@@ -194,10 +216,12 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         
         m.addConstrs(
             (
-                a[idx_l] == syst.THETA * (l.K_MAX[t] * z[idx_l] * KEY_RATE_SCALE - gp.quicksum(r_1[idx_l, idx_d] + r_2[idx_l, idx_d]
+                a[idx_l] == syst.THETA * (l.K_MAX[t] * sum(z[idx_d][idx_l]
+                                                           for idx_d, d in enumerate(demands)
+                                                          ) * KEY_RATE_SCALE - gp.quicksum(r_1[idx_l, idx_d] + r_2[idx_l, idx_d]
                                                                                            for idx_d, d in enumerate(demands)
                                                                                           )
-                                            ) * STORAGE_SCALE
+                                         ) * STORAGE_SCALE
                 for idx_l, l in enumerate(links)
             ), name="qkp_sequence"
         )
@@ -249,34 +273,80 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         # pp = pprint.PrettyPrinter(indent=2, width=120, sort_dicts=False)
         # pp.pprint(solution_filtered)
 
-        k_srv = sum(solution_all["r_h"][idx_d]
+        k_srv = sum(solution_all["r_h"][idx_d] * syst.THETA
                     for idx_d, d in enumerate(demands)
+                    if demand_active[idx_d][t] == 1
                    )
 
-        k_req = sum(d.K_REQ[t]
+        k_req = sum(d.K_REQ[t] * syst.THETA
                     for idx_d, d in enumerate(demands)
+                    if demand_active[idx_d][t] == 1
                    )
 
-        #print(f"k_req: {k_req}, k_srv: {k_srv}")
+        # if k_srv_heur != 0:
+        #     print(f"k_req: {k_req}, k_srv: {k_srv}, k_srv_heur: {k_srv_heur}")
 
         Obj_REQ = sum(d.K_REQ[t]
                      for idx_d, d in enumerate(demands)
                     ) * syst.THETA
         # if m.ObjVal < 0.99 * Obj_REQ:
-        reward = m.ObjVal / Obj_REQ
+        #reward = m.ObjVal / Obj_REQ
         # else:
         #     reward = 10
+        ######################
 
         # reward = 0
         # for idx_d, d in enumerate(demands):
-        #     if solution_all["r_h"][idx_d] >= 0.99 * d.K_REQ[t]:
-        #         reward += 10
+        #     if solution_all["r_h"][idx_d] >= 0.95 * d.K_REQ[t]:
+        #         reward += 1
         #     else:
-        #         reward += solution_all["r_h"][idx_d] / d.K_REQ[t]
+        #         reward += -1 + solution_all["r_h"][idx_d] / d.K_REQ[t]
 
         # reward = reward / len(demands)
+        ###################
 
-        #print(f"reward: {reward}")
+        # reward = 0
+        # if k_srv >= 0.95 * k_req:
+        #     reward = 1
+        # else:
+        #     reward = -1 + k_srv / k_req
+
+        #print(f"k_srv: {k_srv}, k_srv_heur: {k_srv_heur}, k_req: {k_req}")
+
+        #######################
+        # ratio_agent = k_srv      / (k_req + 1e-8)
+        # ratio_heur  = k_srv_heur / (k_req + 1e-8)
+    
+        # if ratio_agent >= 0.99 or k_req == 0:
+        #     reward = 1.0
+        # elif ratio_agent <= 1e-6:
+        #     reward = -1.0
+        # else:
+        #     reward = (ratio_agent - ratio_heur)
+        #     reward = max(-1.0, min(1.0, reward))
+
+        ratio_agent = k_srv / (k_req + 1e-8)
+
+        ratio_h1 = k_srv_heur1 / (k_req + 1e-8)
+        ratio_h2 = k_srv_heur2 / (k_req + 1e-8)
+        
+        h_low  = min(ratio_h1, ratio_h2)
+        h_high = max(ratio_h1, ratio_h2)
+        
+        if k_req == 0:
+            reward = 0.0 * 6
+        
+        elif ratio_agent >= 0.95:
+            reward = 1.0 * 6
+        
+        elif ratio_agent >= h_high:
+            reward = (0.6 + 0.4 * (ratio_agent - h_high)) * 6
+        
+        elif ratio_agent >= h_low:
+            reward = (0.2 + 0.4 * (ratio_agent - h_low) / (h_high - h_low + 1e-8)) * 6
+        
+        else:
+            reward = (-1 * (h_low - ratio_agent)) * 6
 
         if f_qkp:
             A_next = {k: A.get(k, 0) + solution_all["a"].get(k, 0)
@@ -292,7 +362,48 @@ def online_new(gss, haps, links, state, action, t, f_qkp):
         
     return solution_all, reward, A_next
 
-
+def calculate_ppo_reward(m, demands, t, syst):
+    """
+    m: The solved Gurobi model for the current timestep
+    demands: List of demand objects
+    t: Current timestep
+    syst: System parameters
+    """
+    # 1. Calculate the Target (The "Goal")
+    # We use a per-demand satisfaction check to give the agent granular feedback
+    total_req = sum(d.K_REQ[t] for d in demands) * syst.THETA
+    total_achieved = m.ObjVal
+    
+    # 2. Individual Satisfaction Check (Granular Feedback)
+    # Note: This requires you to have the solved values for each demand from Gurobi
+    # Assuming z_vars or similar are accessible to check flow per demand
+    satisfied_count = 0
+    for d in demands:
+        # Check if this specific demand met its threshold
+        # You'll need to pull the specific flow value for demand 'd' from your model
+        achieved_d = get_flow_for_demand(m, d) 
+        if achieved_d >= d.K_REQ[t] * syst.THETA:
+            satisfied_count += 1
+            
+    # 3. Construct the Reward Signal
+    # Component A: Throughput Ratio (0.0 to 1.0)
+    throughput_ratio = total_achieved / total_req if total_req > 0 else 1.0
+    
+    # Component B: Success Bonus 
+    # Encourages satisfying as many GS-GS pairs as possible
+    success_bonus = satisfied_count / len(demands)
+    
+    # Component C: The Penalty
+    # We only penalize if we are significantly below the target
+    penalty = 0
+    if total_achieved < 0.95 * total_req:
+        penalty = -0.5 * (1.0 - throughput_ratio) # Scales with how much we missed
+        
+    # Final Reward Calculation
+    # We weigh success heavily to drive the agent toward satisfying demands
+    reward = (0.3 * throughput_ratio) + (0.7 * success_bonus) + penalty
+    
+    return reward
 
 
 
